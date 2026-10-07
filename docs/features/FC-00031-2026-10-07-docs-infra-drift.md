@@ -16,7 +16,7 @@ Several documents described behavior that is no longer true, `npm test` failed, 
 - `docs/BUILD_SPEC.md`: status line and an item-level progress table replace the "not started" checkboxes; §9B.3, §9B.5, §9B.6 marked resolved where they are.
 - `docs/BASELINE.md`: status line, `package.json` note, test-harness item resolved, item ordering.
 - `docs/DECISIONS.md`: open #16 (employee identity across weeks) and #17 (week-filter visibility) added.
-- `docs/features/FC-00025-…` backfilled for commit `d0c8633`; FEATURE_LOG updated.
+- `docs/features/FC-00025-…` backfilled for commit `b098c9a`; FEATURE_LOG updated.
 
 ## Where in UI
 None.

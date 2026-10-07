@@ -51,4 +51,4 @@ M
 All
 
 ## Shipped as
-Merge commit `6b562f6` (feature commit `43fca10`)
+Merge commit `84bef7c` (feature commit `107ca96`)

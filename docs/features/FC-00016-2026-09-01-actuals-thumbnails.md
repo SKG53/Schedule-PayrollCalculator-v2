@@ -48,4 +48,4 @@ M
 All
 
 ## Shipped as
-Merge commit `eaadf3f` (feature commit `e21aca8`)
+Merge commit `69a3d39` (feature commit `f2d2e07`)

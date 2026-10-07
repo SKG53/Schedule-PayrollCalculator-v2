@@ -47,4 +47,4 @@ S
 All
 
 ## Shipped as
-Merge commit `2987260` (feature commit `660e40a`)
+Merge commit `6253d56` (feature commit `ef73ff1`)

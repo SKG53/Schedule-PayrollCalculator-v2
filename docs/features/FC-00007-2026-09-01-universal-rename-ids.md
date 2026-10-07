@@ -21,7 +21,7 @@ Medium — renames route through existing dispatcher (safe), but visible-ID addi
 Reversible per section. Full revert via single commit.
 
 ## Definition of Done
-See original card in commit `d17aebc`. 12/12 items shipped. 26/26 tests passing (19 pre-existing + 7 new).
+See original card in commit `e277d8a`. 12/12 items shipped. 26/26 tests passing (19 pre-existing + 7 new).
 
 ## Out of scope
 Color-coded exports, preview panel, palette config, PDF colors, schedule decoupling, OCR, mid-process append.
@@ -53,4 +53,4 @@ M
 All
 
 ## Shipped as
-Merge commit `27c064c` (feature commits `d17aebc`, `73330b9`)
+Merge commit `08638a1` (feature commits `e277d8a`, `710f497`)

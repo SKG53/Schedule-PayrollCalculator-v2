@@ -44,4 +44,4 @@ M
 All
 
 ## Shipped as
-Merge commit `ae6e125` (feature commit `76e3e5b`)
+Merge commit `2020c63` (feature commit `855ed12`)

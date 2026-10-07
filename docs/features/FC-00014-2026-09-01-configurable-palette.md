@@ -53,4 +53,4 @@ M
 All
 
 ## Shipped as
-Merge commit `be25fab` (feature commit `dae7271`)
+Merge commit `e05368a` (feature commit `d2f54b5`)

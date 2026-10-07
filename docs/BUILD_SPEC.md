@@ -296,10 +296,10 @@ Ordered by dependency, not by value. Items in a phase can be built in parallel.
 
 | Phase | Item | Status | Where |
 |---|---|---|---|
-| 0 | Login gate removed | Done | b9117a7, FC-00002 |
-| 1 | Mutable session + dispatcher | Done | 52938b5 |
-| 1 | Roster registry (IDs, aliases, active, final-pass, notes in settings file) | Partial — fields round-trip, but identity still resolves by name and IDs are minted per session; see DECISIONS open #16 | 52938b5, cfb1fc3, a730a87, FC-00007, FC-00022 |
-| 1 | Test harness + `npm test` | Done | c5169ef, FC-00031 |
+| 0 | Login gate removed | Done | 5054a37, FC-00002 |
+| 1 | Mutable session + dispatcher | Done | 1fd7ec9 |
+| 1 | Roster registry (IDs, aliases, active, final-pass, notes in settings file) | Partial — fields round-trip, but identity still resolves by name and IDs are minted per session; see DECISIONS open #16 | 1fd7ec9, e7bbd1d, 983d91d, FC-00007, FC-00022 |
+| 1 | Test harness + `npm test` | Done | 0546d75, FC-00031 |
 | 1 | Reference weeks as test fixtures | Not started (fixtures must stay local — real data) | — |
 | 2 | Schedule editing after upload | Partial — edit/add/remove rows; no reorder, no per-week inactive | baseline |
 | 2 | Incremental intake | Done | FC-00008, FC-00011 |
@@ -308,8 +308,8 @@ Ordered by dependency, not by value. Items in a phase can be built in parallel.
 | 4 | Flag split (`OCR_LOW_CONFIDENCE` / `NOT_IN_ROSTER`) | Not started | — |
 | 4 | MN overlap rule | Done | FC-00029 |
 | 4 | Zero-hour retention | Done for scheduled and flat employees | baseline, FC-00027 |
-| 4 | Numeric export cells | Done | 7c47f4d |
-| 4 | Dead-code fixes §9B.3 | Partial — Avg In/Out fixed; the rest open | 06864df |
+| 4 | Numeric export cells | Done | 4176028 |
+| 4 | Dead-code fixes §9B.3 | Partial — Avg In/Out fixed; the rest open | 5c820c1 |
 | 5 | Deck fills, subtotals F/G/H, widths, palettes, PDF | Done | FC-00012–00015, FC-00025 |
 | 5 | §7.4 orphan name resolution | Not started — exports still append `(orphan)` | — |
 | 5 | §7.5 final-pass override | Superseded — Contract Check is a real pay type (FC-00020); `final_pass_method` is stored but not applied | FC-00020 |
@@ -352,7 +352,7 @@ control. Decision required before changing — removing it will degrade name mat
 
 | Item | Detail | Phase |
 |---|---|---|
-| ~~Time Card Data export~~ | ~~Avg In/Out Diff columns always empty.~~ **Fixed 06864df.** | 4 |
+| ~~Time Card Data export~~ | ~~Avg In/Out Diff columns always empty.~~ **Fixed 5c820c1.** | 4 |
 | `collectAllFlags` | No-show/unscheduled/orphan rollup computed nowhere, shown nowhere. Dead. | 4 |
 | Week filter | Silently disabled when a schedule lacks its date row — nothing is filtered and data aggregates by day-of-week instead of date. | 4 |
 | `resolveDisplayName` | Fuzzy containment can match across employees (1607–1612). This is the mechanism behind the known two-employee conflation. | 4 |
@@ -369,7 +369,7 @@ Section 9 of this spec is therefore new work, not a modification.
 ### 9B.5 Test suite
 
 **Resolved except reference-week fixtures.** Every test file now loads the real script from
-`index.html` through `tests/load-app.js` (c5169ef); `npm test` runs the whole suite
+`index.html` through `tests/load-app.js` (0546d75); `npm test` runs the whole suite
 (FC-00031). The three reference weeks are still a manual check — they are real data and can
 only ever be local, gitignored fixtures.
 
