@@ -6,7 +6,7 @@
 A "↻ This row" button on every OCR review row re-reads only that employee and date from the source image. The fresh reading replaces that row's times; nothing else changes. Manual edits can then be made on top.
 
 ## Why
-the owner: "enable a button that allows me to rerun OCR for one specific line of the payroll data? and then I can make manual edits on top of that if I need to. it's more granular than running ocr for the entire timecard again."
+The owner: "enable a button that allows me to rerun OCR for one specific line of the payroll data? and then I can make manual edits on top of that if I need to. it's more granular than running ocr for the entire timecard again."
 
 ## Fix
 - `rerunOcrForRow(entIdx, rowId)` finds the row's image by job id (FC-00030), sends the normal TC/EC prompt plus `_rowFocusPrompt` (employee, date, the current reading, "re-read independently, return one element or []"), and applies the result in place. Auto-escalation to Pro applies to TC as in a full run.

@@ -6,7 +6,7 @@
 Each employee has one permanent ID and one canonical name, both defined by the settings (master) file. Every other spelling (alias, other case, stray period) lands on that ID. New employees continue after the highest ID. The order files are loaded in no longer changes any ID or any pay figure.
 
 ## Why
-the owner: "set names with ids once, and let that persevere from here forward. any new employees will continue from there. any aliases, will just attach to this new permanent employee ID." Resolves DECISIONS open #16.
+The owner: "set names with ids once, and let that persevere from here forward. any new employees will continue from there. any aliases, will just attach to this new permanent employee ID." Resolves DECISIONS open #16.
 
 Observed in real weeks: when the settings file renamed people to full names (alias = the schedule's first name), the schedule's first names minted new, empty records. Nine to ten people per week computed at $0 in the tool. IDs also shifted between weeks with load order, and loading a settings file after a schedule could relabel one person's record as another's.
 

@@ -6,7 +6,7 @@
 The week filter stays exactly as it is (only the loaded schedule's seven dates are paid). Whatever it leaves out is now shown on the Payroll tab, in the export preview and in the toast after every payroll export. A schedule without a date row (filter off) gets its own warning.
 
 ## Why
-the owner: the logic is right, but "dropping it without notification or clear instruction is bad … someone might just forget, and never be told that it's a problem." Resolves DECISIONS open #17.
+The owner: the logic is right, but "dropping it without notification or clear instruction is bad … someone might just forget, and never be told that it's a problem." Resolves DECISIONS open #17.
 
 ## Fix
 - `computePayrollForEntity` also returns `excludedActuals` ({empName, date, hours worked}) and `weekInfo` ({filtered, start, end, noDateRow}). Paid figures are unchanged.

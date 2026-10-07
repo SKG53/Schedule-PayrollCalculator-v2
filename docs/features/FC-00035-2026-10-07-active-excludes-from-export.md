@@ -6,7 +6,7 @@
 The Active checkbox in Payroll → Payroll Calculation now also controls this week's output. An unchecked person is left out of the Combined preview, the all-entity preview and every payroll export (Excel and PDF). The same box still keeps them off the next schedule.
 
 ## Why
-the owner: "if I uncheck the blue check mark on that last screen of the app or tool, that name and all of its data doesn't show up on the final export, even in the preview."
+The owner: "if I uncheck the blue check mark on that last screen of the app or tool, that name and all of its data doesn't show up on the final export, even in the preview."
 
 ## Fix
 - `_collectExportData` and `renderAllEntityPreview` skip rows whose roster Active is unchecked (`_isInPayroll`). Every export and the Combined preview read through these, so nothing else needs its own filter.

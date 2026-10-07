@@ -6,7 +6,7 @@
 Every derived number in the Excel exports is now a formula with the tool's value cached as its result. Change an hour, a rate or a flat amount in Excel and the row, the entity subtotal and the grand total recalculate.
 
 ## Why
-the owner: "these exports need to have numbers and formulas and values. I keep getting excels with just copy pasted values and so if I change something, the totals and stuff like that don't update."
+The owner: "these exports need to have numbers and formulas and values. I keep getting excels with just copy pasted values and so if I change something, the totals and stuff like that don't update."
 
 ## Fix
 - `_columnsFor` specs gain `fx(r, rowNumber)` (row formulas) and `totals` (summed columns). `_exportExcel` applies both; `_exportPdf` uses the same `totals` through `_sectionTotals`, so the PDF and the workbook always total the same columns.

@@ -6,7 +6,7 @@
 When the owner changes a time or date that OCR produced, the row becomes a manual (MN) entry: his value is kept, survives OCR re-runs, and in payroll an approved MN pair replaces any overlapping TC/EC pair for the same employee and date. Non-overlapping pairs still add.
 
 ## Why
-the owner reads every card and is the final verification. Before this, all sources merged additively: a manual correction never replaced the OCR punch it corrected, and re-running OCR on an image discarded edits made to that image's rows. Decision recorded as DECISIONS Settled #15 (was Open #11).
+The owner reads every card and is the final verification. Before this, all sources merged additively: a manual correction never replaced the OCR punch it corrected, and re-running OCR on an image discarded edits made to that image's rows. Decision recorded as DECISIONS Settled #15 (was Open #11).
 
 ## Fix
 - `processReviewRow` stores the OCR values (`_ocr`) and source (`_ocrSource`) for TC/EC rows.

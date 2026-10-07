@@ -4,7 +4,7 @@ Internal payroll and scheduling tool for The Nirvana Group. Processes weekly tim
 across three entities and produces payroll reports. Used every week to pay real people.
 
 **Live at:** https://skg53.github.io/Schedule-PayrollCalculator/
-**Owner:** the owner (head of the organization)
+**Owner:** repository owner (head of the organization)
 
 ---
 
@@ -138,7 +138,7 @@ mistake made in this codebase.
 
 ## Not validated — do not add these
 
-the owner has explicitly ruled these out. Do not implement, flag, or warn about:
+The owner has explicitly ruled these out. Do not implement, flag, or warn about:
 
 - Rest intervals between shifts
 - Overtime thresholds

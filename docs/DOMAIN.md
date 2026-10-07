@@ -72,7 +72,7 @@ show a break that does not appear anywhere in the punches. That is expected.
 
 ### MN precedence — the reviewer's values are final (settled 2026-10-07, FC-00029)
 
-the owner reads every card and is the final verification. Two rules follow:
+The owner reads every card and is the final verification. Two rules follow:
 
 1. **An edited OCR row becomes a manual entry.** Changing any time or the date on a TC/EC
    row marks it MN (shown as "✎ edited (was TC)"). Its values are kept exactly as typed and
