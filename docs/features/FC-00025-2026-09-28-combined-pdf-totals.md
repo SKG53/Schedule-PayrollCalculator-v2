@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-28 · **Slice:** S · **Risk:** Low · **Status:** done · **Affected entities:** All
 
-*Backfilled 2026-10-07 (FC-00031): this fix shipped as commit `548112b` without a card.*
+*Backfilled 2026-10-07 (FC-00031): this fix shipped as commit `d0c8633` without a card.*
 
 ## What
 The Combined PDF's entity subtotal and grand-total rows carry the same values, in the same columns, as the Combined Excel and the preview.
@@ -48,4 +48,4 @@ S
 All
 
 ## Shipped as
-Commit `548112b` — "Fix Combined PDF subtotal and grand-total rows"
+Commit `d0c8633` — "Fix Combined PDF subtotal and grand-total rows"
