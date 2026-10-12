@@ -231,7 +231,7 @@ table.sched tr.orphan-row-quiet td.name-cell::before{content:none}
 .overlay-panel details{margin-bottom:8px}
 .overlay-panel details summary{padding:4px 0}
 /* FC-00039: undo button + History panel */
-.undo-btn{border-color:var(--amber);color:#92400E;background:#FFFBEB}
+.undo-btn{border-color:var(--amber);color:#92400E;background:#FFFBEB;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .undo-btn[disabled]{opacity:0.5;cursor:default;transform:none}
 .overlay-panel.history-panel{max-width:1100px;overflow-x:hidden}
 .history-panel h3{font-size:13px;font-weight:700;margin:16px 0 6px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text2)}
@@ -243,6 +243,10 @@ table.sched tr.orphan-row-quiet td.name-cell::before{content:none}
 .history-table tr.reverted td{color:var(--text3);text-decoration:line-through}
 .history-table tr.reverted td.act{text-decoration:none}
 .history-empty{font-size:13px;color:var(--text3);padding:8px 0}
+/* FC-00037: snapshot re-attach banner + small thumbnails */
+.snapshot-reattach{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:12px 16px;margin-bottom:12px;border:1px solid #FCD34D;background:#FFFBEB;border-radius:10px;font-size:13px;color:#78350F}
+.snapshot-missing{font-size:12px;color:var(--text2);margin-top:4px}
+img.tc-thumb.tc-thumb-small{cursor:default;outline:1px dashed #F59E0B}
 .history-table .mini-btn{padding:3px 8px;font-size:11px;border-radius:4px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-family:'Outfit',sans-serif}
 .history-table .mini-btn[disabled]{opacity:0.5;cursor:default}
 .overlay-panel input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,0.12)}
@@ -576,6 +580,8 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
     <div class="header-actions">
       <span id="ocrStatus" class="ocr-status"></span>
       <span id="undoBar"></span>
+      <button class="btn" onclick="saveSnapshot()" title="Download one file holding this whole session — every screen, edit and approval. Images are referenced by fingerprint, not copied.">Save snapshot</button>
+      <label class="btn" title="Open a snapshot file and put every screen back exactly as it was saved" style="display:inline-block">Open snapshot<input type="file" id="snapshotInput" accept=".json,application/json" style="display:none" onchange="openSnapshotFile(this.files[0]);this.value=''"></label>
       <button class="btn" onclick="openHistory()" title="Every change made this session, with Revert per line">History</button>
       <button class="btn" onclick="openSettings()">Settings</button>
     </div>
@@ -1533,6 +1539,7 @@ function _captureState(){
     empIdSeq:_cloneState(session._empIdSeq||null),
     fileIdMax:_cloneState(session._fileIdMax||null),
     stores:{},
+    startedAt:session.startedAt,
     ui:{nextEntityId,activeEntityIdx,activePayrollEntityIdx,activePayrollSubTab:_cloneState(activePayrollSubTab),currentTab,currentView,flagView,activeEmp}
   };
   _STORE_NAMES.forEach(n=>{st.stores[n]=_cloneState(session[n]);});
@@ -1562,6 +1569,7 @@ function _restoreState(st,opts){
   session.log.length=0;
   st.log.forEach(e=>session.log.push(e));
   session.seq=st.seq;
+  if(st.startedAt)session.startedAt=st.startedAt;
   // Legacy combined-mode code reassigns the actualDays global; restore into the session's
   // own array and point the global back at it.
   const ad=session.actualDays;
@@ -1653,7 +1661,8 @@ function undoCheckpoint(cpId){
     if(loss.untracked)parts.push('Other edits made since (schedule cells, entity names)');
     if(!confirm('Undo "'+cp.label+'"?\n\nThis puts everything back to just before it, so these are lost too:\n• '+parts.join('\n• ')+'\n\nContinue?'))return false;
   }
-  _restoreState(cp.state,{ui:false});
+  // Opening a snapshot moves the screen too, so undoing it puts the screen back as well.
+  _restoreState(cp.state,{ui:!!(cp.meta&&cp.meta.restoreUi)});
   _checkpoints.splice(i);
   _rerenderAll();
   showToast('Undone: '+cp.label,'ok');
@@ -1846,6 +1855,262 @@ function renderHistoryPanel(){const b=document.getElementById('historyBody');if(
 function openHistory(){_historyOpen=true;document.getElementById('historyOverlay').style.display='flex';renderHistoryPanel();}
 function closeHistory(){_historyOpen=false;document.getElementById('historyOverlay').style.display='none';}
 function _refreshHistoryIfOpen(){if(_historyOpen)renderHistoryPanel();}
+
+// ================================================================
+// FC-00037 — session snapshot: save the whole session to one file, open it later
+// ================================================================
+// The snapshot is the same full state a checkpoint holds (_captureState), written as JSON.
+// Images are referenced, not stored: each image file becomes a manifest entry (name, entity,
+// kind, size, SHA-256 fingerprint, small embedded thumbnail) and is matched back by
+// fingerprint when the owner re-attaches that week's files. No browser preference and no API
+// key is ever part of it (the key lives in localStorage, never in session state).
+const SNAPSHOT_SCHEMA='SPCalcSessionSnapshot';
+const SNAPSHOT_VERSION=1;
+const SNAPSHOT_THUMB_EDGE=200;
+const SNAPSHOT_THUMB_MAX_BYTES=15000;
+const _INTAKE_QUEUES=['timecardFiles','easyclockFiles','mixedFiles'];
+const _QUEUE_KIND={timecardFiles:'TC',easyclockFiles:'EC',mixedFiles:'MIX'};
+// Other features add their own state here (pending settings, thresholds, download ticks).
+const _snapshotParts={};
+function _registerSnapshotPart(name,save,load){_snapshotParts[name]={save,load};}
+_registerSnapshotPart('fc24Scratch',()=>_fc24Scratch?_cloneState(_fc24Scratch):null,v=>{_fc24Scratch=v?_cloneState(v):null;});
+function _snapshotPartsData(){const o={};Object.keys(_snapshotParts).forEach(k=>{o[k]=_snapshotParts[k].save();});return o;}
+let _lastSavedSig=null;
+
+// ---- File naming shared by every download (FC-00040 uses the same stem) ----
+const _DEFAULT_FILE_LABELS={N11:'Nirvana',ZIO:'Zion',HEF:'Hefner'};
+function _entityFileLabel(ent){
+  if(ent&&ent.fileLabel)return ent.fileLabel;
+  const d=_DEFAULT_FILE_LABELS[(ent&&ent.code)||_resolveEntityCode(ent&&ent.name)];
+  return d||(((ent&&ent.name)||'').replace(/[^A-Za-z0-9]+/g,'')||'Entity');
+}
+function _entityHasData(ent){
+  const it=ent.intake||{};
+  return !!((ent.employees||[]).length||(it.reviewRows||[]).length||(it._ocrJobs||[]).length||(ent.actualDays||[]).length||_INTAKE_QUEUES.some(q=>(it[q]||[]).length));
+}
+function _weekRangeTag(){
+  const e=entities.find(x=>x.dateLabels&&x.dateLabels[0]&&x.dateLabels[6]);
+  if(!e)return'';
+  const a=schedLabelToIso(e.dateLabels[0]),b=schedLabelToIso(e.dateLabels[6]);
+  if(!a||!b)return'';
+  return a.slice(5,7)+a.slice(8,10)+'to'+b.slice(5,7)+b.slice(8,10);
+}
+function _fileStem(){
+  const ents=entities.filter(_entityHasData);
+  const labels=[...new Set((ents.length?ents:entities).map(_entityFileLabel))];
+  const wk=_weekRangeTag();
+  return labels.join('_')+(wk?'_'+wk:'');
+}
+function _downloadText(text,filename,mime){
+  const blob=new Blob([text],{type:mime||'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+}
+
+// ---- Image fingerprints and thumbnails ----
+const _fpCache=new WeakMap();
+async function _fileBytes(file){
+  if(file&&typeof file.arrayBuffer==='function')return await file.arrayBuffer();
+  return await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsArrayBuffer(file);});
+}
+async function _imageFingerprint(file){
+  if(_fpCache.has(file))return _fpCache.get(file);
+  const d=await crypto.subtle.digest('SHA-256',await _fileBytes(file));
+  const hex=Array.from(new Uint8Array(d)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  _fpCache.set(file,hex);
+  return hex;
+}
+// JPEG, long edge 200 px, at most 15 KB. Null when the browser cannot decode the file.
+async function _makeThumb(file){
+  try{
+    if(typeof createImageBitmap!=='function')return null;
+    const bm=await createImageBitmap(file);
+    const scale=Math.min(1,SNAPSHOT_THUMB_EDGE/Math.max(bm.width,bm.height));
+    const c=document.createElement('canvas');
+    c.width=Math.max(1,Math.round(bm.width*scale));c.height=Math.max(1,Math.round(bm.height*scale));
+    c.getContext('2d').drawImage(bm,0,0,c.width,c.height);
+    bm.close&&bm.close();
+    for(const q of [0.72,0.6,0.48,0.36,0.25]){
+      const url=c.toDataURL('image/jpeg',q);
+      if(Math.floor((url.length-url.indexOf(',')-1)*3/4)<=SNAPSHOT_THUMB_MAX_BYTES)return url;
+    }
+    return null;
+  }catch(e){return null}
+}
+function _isFileRef(v){return !!v&&typeof v==='object'&&typeof v.__imgRef==='number'}
+
+// ---- Build ----
+// True while an action is mid-flight: a snapshot taken then would save half a run.
+function _busyForSnapshot(){
+  return _checkpoints.some(c=>c.afterSeq==null)||entities.some(e=>e.intake&&e.intake.ocrInProgress);
+}
+async function buildSnapshot(){
+  const st=_captureState();
+  const images=[];
+  const byFile=new Map();
+  async function entryForFile(file,ent,kind,jobId){
+    if(byFile.has(file)){const e=images[byFile.get(file)];if(jobId&&!e.jobIds.includes(jobId))e.jobIds.push(jobId);return byFile.get(file);}
+    const entry={ref:images.length,name:file.name||'',entity:ent.id,entityName:ent.name||'',kind,size:typeof file.size==='number'?file.size:null,
+      type:file.type||'',sha256:await _imageFingerprint(file),thumb:await _makeThumb(file),jobIds:jobId?[jobId]:[]};
+    images.push(entry);byFile.set(file,entry.ref);
+    return entry.ref;
+  }
+  function entryForCarried(img,ent,jobId){
+    const entry=Object.assign({},img,{ref:images.length,entity:ent.id,entityName:ent.name||'',jobIds:jobId?[jobId]:[]});
+    images.push(entry);
+    return entry.ref;
+  }
+  // Live entities hold the File objects; the captured clone has the same shape, index for index.
+  for(let ei=0;ei<entities.length;ei++){
+    const live=entities[ei],cl=st.entities[ei];
+    if(!live.intake||!cl.intake)continue;
+    const jobs=live.intake._ocrJobs||[];
+    for(let j=0;j<jobs.length;j++){
+      const job=jobs[j],cj=cl.intake._ocrJobs[j];
+      if(job.file)cj.file={__imgRef:await entryForFile(job.file,live,job.kind,job.id)};
+      else if(job._img)cj.file={__imgRef:entryForCarried(job._img,live,job.id)};
+      delete cj._img;
+    }
+    for(const q of _INTAKE_QUEUES){
+      const files=live.intake[q]||[];
+      cl.intake[q]=[];
+      for(const f of files)cl.intake[q].push({__imgRef:await entryForFile(f,live,_QUEUE_KIND[q],null)});
+    }
+    // Queued files still waiting to be re-attached go back into their queue as references.
+    (live.intake._missingQueued||[]).forEach(m=>{cl.intake[m.queue]=cl.intake[m.queue]||[];cl.intake[m.queue].push({__imgRef:entryForCarried(m.img,live,null)});});
+    delete cl.intake._missingQueued;
+  }
+  return{schema:SNAPSHOT_SCHEMA,version:SNAPSHOT_VERSION,savedAt:new Date().toISOString(),fileStem:_fileStem(),
+    images,state:st,parts:_snapshotPartsData()};
+}
+async function saveSnapshot(){
+  if(_busyForSnapshot()){showToast('An action is still running (OCR or a re-read). Save the snapshot when it finishes.','err');return null;}
+  const snap=await buildSnapshot();
+  const name=(snap.fileStem||'Session')+'_Snapshot.json';
+  _downloadText(JSON.stringify(snap),name,'application/json');
+  _lastSavedSig=_snapshotSig();
+  showToast('Snapshot saved · '+name+(snap.images.length?' · '+snap.images.length+' image'+(snap.images.length===1?'':'s')+' referenced':''),'ok');
+  return snap;
+}
+
+// ---- Open ----
+function _validateSnapshot(snap){
+  if(!snap||typeof snap!=='object'||snap.schema!==SNAPSHOT_SCHEMA||!snap.state||!Array.isArray(snap.state.entities))
+    return'This file is not a session snapshot from this tool.';
+  if(typeof snap.version!=='number'||snap.version<1)return'This snapshot has no readable version and cannot be opened.';
+  if(snap.version>SNAPSHOT_VERSION)return'This snapshot was saved by a newer version of the tool (version '+snap.version+'). This page reads up to version '+SNAPSHOT_VERSION+'. Open it with the current tool.';
+  return null;
+}
+function _sessionHasData(){
+  return entities.some(e=>_entityHasData(e))||Object.keys(session.roster.byId).length>0||session.log.length>0;
+}
+// Turns manifest references back into "not attached yet" images.
+function _resolveSnapshotImages(st,images){
+  const img=ref=>{const e=images[ref];if(!e)return null;const o=Object.assign({},e);delete o.ref;delete o.jobIds;return o;};
+  st.entities.forEach(ent=>{
+    const it=ent.intake;if(!it)return;
+    (it._ocrJobs||[]).forEach(job=>{
+      if(_isFileRef(job.file)){job._img=img(job.file.__imgRef);job.file=null;}
+    });
+    _INTAKE_QUEUES.forEach(q=>{
+      const keep=[];
+      (it[q]||[]).forEach(f=>{
+        if(_isFileRef(f)){it._missingQueued=it._missingQueued||[];it._missingQueued.push({queue:q,img:img(f.__imgRef)});}
+        else keep.push(f);
+      });
+      it[q]=keep;
+    });
+  });
+}
+function _applySnapshot(snap){
+  const st=_cloneState(snap.state);
+  _resolveSnapshotImages(st,snap.images||[]);
+  _restoreState(st,{ui:true});
+  const parts=snap.parts||{};
+  Object.keys(_snapshotParts).forEach(k=>_snapshotParts[k].load(parts[k]===undefined?null:parts[k]));
+}
+// Returns {ok, error?, missing?}. A busy session asks first; the open itself is undoable.
+function openSnapshotData(snap,label){
+  const err=_validateSnapshot(snap);
+  if(err){alert(err);return{ok:false,error:err};}
+  if(_busyForSnapshot()){showToast('An action is still running. Open the snapshot when it finishes.','err');return{ok:false,error:'busy'};}
+  if(_sessionHasData()&&!confirm('Open this snapshot?\n\nIt replaces everything in the tool now. You can go back with "Undo Open snapshot".'))return{ok:false,error:'declined'};
+  _withCheckpoint('Open snapshot'+(label?' · '+label:''),()=>_applySnapshot(snap),{restoreUi:true});
+  _rerenderAll();
+  _lastSavedSig=_snapshotSig();
+  const missing=missingImages();
+  showToast('Snapshot opened'+(missing.length?' · '+missing.length+' image'+(missing.length===1?'':'s')+' to re-attach on Actuals Intake':''),'ok');
+  return{ok:true,missing:missing.length};
+}
+function openSnapshotFile(file){
+  if(!file)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    let snap;
+    try{snap=JSON.parse(String(r.result));}
+    catch(e){alert('This file is not a session snapshot from this tool.');return;}
+    openSnapshotData(snap,file.name);
+  };
+  r.readAsText(file);
+}
+
+// ---- Re-attach images by fingerprint ----
+function missingImages(){
+  const out=[];
+  entities.forEach((ent,ei)=>{
+    const it=ent.intake;if(!it)return;
+    (it._ocrJobs||[]).forEach(job=>{if(!job.file&&job._img)out.push({entityIdx:ei,entity:ent.name||'',name:job._img.name,sha256:job._img.sha256,jobId:job.id});});
+    (it._missingQueued||[]).forEach(m=>out.push({entityIdx:ei,entity:ent.name||'',name:m.img.name,sha256:m.img.sha256,queue:m.queue}));
+  });
+  return out;
+}
+// Each picked file is matched by SHA-256 only; its name plays no part.
+async function reattachImages(files){
+  const list=Array.from(files||[]);
+  const bySha=new Map();
+  for(const f of list){bySha.set(await _imageFingerprint(f),f);}
+  const used=new Set();const matched=[];
+  entities.forEach(ent=>{
+    const it=ent.intake;if(!it)return;
+    (it._ocrJobs||[]).forEach(job=>{
+      if(job.file||!job._img)return;
+      const f=bySha.get(job._img.sha256);if(!f)return;
+      job.file=f;job._thumbUrl=null;delete job._img;used.add(f);matched.push(job.name);
+    });
+    if(it._missingQueued){
+      it._missingQueued=it._missingQueued.filter(m=>{
+        const f=bySha.get(m.img.sha256);if(!f)return true;
+        (it[m.queue]=it[m.queue]||[]).push(f);used.add(f);matched.push(m.img.name);return false;
+      });
+      if(!it._missingQueued.length)delete it._missingQueued;
+    }
+  });
+  const unused=list.filter(f=>!used.has(f)).map(f=>f.name);
+  const still=missingImages().map(m=>m.name);
+  _rerenderAll();
+  const msg='Re-attached '+matched.length+' image'+(matched.length===1?'':'s')+(unused.length?' · '+unused.length+' file'+(unused.length===1?'':'s')+' matched nothing (not attached)':'')+(still.length?' · '+still.length+' still missing':'');
+  showToast(msg,matched.length&&!unused.length?'ok':'err');
+  return{matched,unused,missing:still};
+}
+function _reattachBannerHtml(){
+  const miss=missingImages();
+  if(!miss.length)return'';
+  const names=miss.slice(0,8).map(m=>escHtml(m.name)+(m.entity?' <span style="color:var(--text3)">('+escHtml(m.entity)+')</span>':'')).join(', ')+(miss.length>8?' …':'');
+  return`<div class="snapshot-reattach"><div><b>${miss.length} image${miss.length===1?'':'s'} from the snapshot ${miss.length===1?'is':'are'} not attached.</b> Thumbnails show small copies. Pick that week's timecard files to get full size, the image viewer and re-read back. Files are matched by their content, not their names.<div class="snapshot-missing">${names}</div></div><label class="btn btn-primary" style="white-space:nowrap">Re-attach images…<input type="file" accept="image/*" multiple style="display:none" onchange="reattachImages(this.files);this.value=''"></label></div>`;
+}
+
+// ---- Leave-page warning ----
+function _snapshotSig(){return _stateSig(_captureState())+'|'+JSON.stringify(_snapshotPartsData())}
+function hasUnsavedChanges(){
+  if(_lastSavedSig!==null)return _snapshotSig()!==_lastSavedSig;
+  return _sessionHasData();
+}
+function _onBeforeUnload(e){
+  if(!hasUnsavedChanges())return false;
+  if(e){e.preventDefault();e.returnValue='';}
+  return true;
+}
 function recompute(opts){
   const idx=entities.findIndex(e=>e.id===(opts&&opts.entity));
   if(idx<0)return null;
@@ -4182,7 +4447,7 @@ function renderIntake(){
     return;
   }
   // Top-level toolbar: import a previously-exported Actuals Intake .xlsx to skip OCR
-  let html=_dupBannerHtml();
+  let html=_reattachBannerHtml()+_dupBannerHtml();
   html+='<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px"><button class="btn" onclick="document.getElementById(\'actualsIntakeImportInput\').click()" title="Re-import a previously exported Actuals Intake .xlsx — restores approved rows so payroll can be calculated without redoing OCR" style="font-size:12px;padding:6px 14px">⤴ Import Actuals Intake (.xlsx)</button></div>';
   entities.forEach((ent,idx)=>{
     ensureIntakeState(ent);
@@ -4360,6 +4625,10 @@ function _thumbUrlForJob(job){
 // fragment meant to sit immediately before the filename text in the existing Image <td>.
 function _thumbCellHtml(entIdx,rowOrName){
   const job=_findJobForRow(entIdx,rowOrName);
+  if(job&&!job.file&&job._img&&job._img.thumb){
+    // FC-00037: small copy saved in the snapshot until the original is re-attached.
+    return `<img class="tc-thumb tc-thumb-small" src="${escHtml(job._img.thumb)}" alt="Timecard thumbnail (small copy)" title="Small copy from the snapshot. Re-attach images (top of this tab) for full size and re-read.">`;
+  }
   if(!job||!job.file){
     return '<span class="tc-thumb-placeholder" title="No source image available">\uD83D\uDDCE</span>';
   }
@@ -4599,6 +4868,7 @@ async function _rerunOcrForImageImpl(entIdx, imageKey, maxAttempts){
   if(jobIdx<0){showToast('Image "'+imageKey+'" not found in OCR jobs (or the name is shared by several images). Try re-uploading.','err');return;}
   // Force job status so retryOcrJob doesn't skip it (it only retries 'err' or completed jobs)
   const job=jobs[jobIdx];
+  if(!job.file){showToast('This image is not attached yet. Use "Re-attach images" at the top of Actuals Intake, then re-run.','err');return;}
   if(job.status==='running'||job.status==='retrying'){showToast('OCR already running for this image','ok');return;}
   job.status='err'; // allow retry
   job.detail='re-run requested from review table';
@@ -4670,7 +4940,7 @@ async function _rerunOcrForRowImpl(entIdx,rowId){
   const row=ent.intake.reviewRows.find(r=>r.id===rowId);if(!row)return;
   if(row._rerunning){showToast('Already re-reading this row','ok');return;}
   const job=_findJobForRow(entIdx,row);
-  if(!job||!job.file){showToast('The image for this row is not in this session. Re-upload it to re-read the row.','err');return;}
+  if(!job||!job.file){showToast(job&&job._img?'This image is not attached yet. Use "Re-attach images" at the top of Actuals Intake, then re-read.':'The image for this row is not in this session. Re-upload it to re-read the row.','err');return;}
   if(job.status==='running'||job.status==='retrying'){showToast('OCR is already running for this image','ok');return;}
   const edited=row._reviewerEdited||row.source==='MN';
   if(edited&&!confirm('This row has your manual edits. Re-reading replaces them with a fresh OCR reading (you can edit again afterwards). Continue?'))return;
@@ -7623,6 +7893,8 @@ function collectAllFlags(allEntityResults){
 updateOcrStatus();
 renderEntityTabBar();
 syncEntityHeader();
+// FC-00037: closing or refreshing with changes since the last snapshot asks first.
+window.addEventListener('beforeunload',_onBeforeUnload);
 </script>
 </body>
 </html>

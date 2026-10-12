@@ -495,7 +495,21 @@ function loadApp() {
       CHECKPOINT_LIMIT,
       _rerenderAll,
       importPayrollSettingsFile,
+      buildSnapshot,
+      saveSnapshot,
+      openSnapshotData,
+      openSnapshotFile,
+      reattachImages,
+      missingImages,
+      hasUnsavedChanges,
+      _onBeforeUnload,
+      _fileStem,
+      _validateSnapshot,
+      SNAPSHOT_VERSION,
+
       getActiveEntityIdx: () => activeEntityIdx,
+      getCurrentTabName: () => currentTab,
+      getScratch: () => _fc24Scratch,
     };
   `;
 

@@ -40,7 +40,7 @@ Index of all Feature Cards. Updated at approval time and on status change.
 | FC-00034 | 2026-10-07 | S | Low | done | [features/FC-00034-2026-10-07-rerun-ocr-one-row.md](features/FC-00034-2026-10-07-rerun-ocr-one-row.md) | Re-run OCR for one review row |
 | FC-00035 | 2026-10-07 | S | Medium | done | [features/FC-00035-2026-10-07-active-excludes-from-export.md](features/FC-00035-2026-10-07-active-excludes-from-export.md) | Unchecking Active leaves a person out of the preview and exports |
 | FC-00036 | 2026-10-07 | M | Medium-High | done | [features/FC-00036-2026-10-07-permanent-employee-ids.md](features/FC-00036-2026-10-07-permanent-employee-ids.md) | Permanent employee IDs; master settings file owns identity |
-| FC-00037 | 2026-10-12 | L | Medium-High | approved | [features/FC-00037-2026-10-12-session-snapshot.md](features/FC-00037-2026-10-12-session-snapshot.md) | Session snapshot: save and reopen every screen |
+| FC-00037 | 2026-10-12 | L | Medium-High | done | [features/FC-00037-2026-10-12-session-snapshot.md](features/FC-00037-2026-10-12-session-snapshot.md) | Session snapshot: save and reopen every screen |
 | FC-00038 | 2026-10-12 | M | Medium | approved | [features/FC-00038-2026-10-12-staged-settings-import.md](features/FC-00038-2026-10-12-staged-settings-import.md) | Staged settings import: preview before anything changes |
 | FC-00039 | 2026-10-12 | M | Medium | done | [features/FC-00039-2026-10-12-undo-and-history.md](features/FC-00039-2026-10-12-undo-and-history.md) | Undo for big actions, and a change history with revert |
 | FC-00040 | 2026-10-12 | M | Low | approved | [features/FC-00040-2026-10-12-downloads-page.md](features/FC-00040-2026-10-12-downloads-page.md) | Downloads page: every export in one list |

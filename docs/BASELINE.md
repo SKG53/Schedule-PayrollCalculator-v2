@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00039 (2026-10-12).
+Feature Card since — last updated FC-00037 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -75,7 +75,11 @@ commit.
     settings-file content are barred, and none of those are stored. No payroll
     data reaches any browser store.
 - **What survives a refresh:** the Gemini API key, model choices, and auto-escalate
-  flag (localStorage). All schedule/actuals/payroll data is gone — correct.
+  flag (localStorage). All schedule/actuals/payroll data is gone — correct. Leaving or
+  refreshing with changes since the last snapshot asks first (FC-00037).
+- **Session snapshot (FC-00037):** Save snapshot downloads one JSON file
+  (`SPCalcSessionSnapshot` v1) with the whole session; Open snapshot restores every screen.
+  Images are listed by SHA-256 with a ≤ 15 KB thumbnail and re-attached by content.
 - **Settings export fields:** `Entity | Employee | Wage/hour | Type | Flat Amount |
   Pay Method | Deposit Amount | Deposit Typed As | Active | Aliases` (schema tag
   `SPCalcPayrollSettingsV3`), optionally + 15 break columns: `Default Break (min)`
@@ -96,8 +100,8 @@ commit.
 Three top-level tabs (leaving Schedules is blocked until every entity with employees
 has a name):
 
-Header: **Undo <last big action>** (FC-00039), **History** (every change with Revert),
-Settings.
+Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapshot**
+(FC-00037), **History** (every change with Revert), Settings.
 
 1. **Schedules** — per-entity sub-tabs (+ Entity to add, Remove button, which asks first
    and is undoable). Upload
