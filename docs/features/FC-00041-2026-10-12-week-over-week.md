@@ -1,6 +1,6 @@
 # FC-00041 — Week-over-week check against last week's snapshot
 
-**Date:** 2026-10-12 · **Slice:** M · **Risk:** Low · **Status:** approved · **Affected entities:** All
+**Date:** 2026-10-12 · **Slice:** M · **Risk:** Low · **Status:** done · **Affected entities:** All
 
 ## What
 Loading last week's snapshot shows a "Since last week" panel: who is new or missing, what settings changed, and whose hours or pay moved a lot.
@@ -28,6 +28,18 @@ Fully reversible via one revert commit.
 5. Entity totals table: hours, actual total, deposit, cash — last week, this week, difference.
 6. Informational only; never blocks an export.
 7. A snapshot from the same or a later week than the current one shows a warning.
+
+## Built
+- Payroll tab, below the export buttons: **Since last week** with "Load last week's snapshot…". Last week is computed by swapping its snapshot into the live session for one synchronous step and putting the live objects straight back; this week's data, log, undo list and unsaved-changes state are untouched.
+- "Missing" = paid last week and either not on payroll or on payroll at $0 this week (the Now column says which, or "Active unchecked"). Those people are not listed again as swings.
+- "Blank rate" = on payroll this week with hours and a blank rate (shows last week's rate).
+- Settings are compared for anyone on payroll in either week, plus anyone whose Active flag moved.
+- Thresholds are **tool settings**: in session state (so Undo, History revert and the snapshot carry them) and in a new **Tool Settings** sheet of the settings file (`Week-over-week hours swing`, `Week-over-week pay swing %`). Older settings files without the sheet keep the defaults.
+
+## Verification
+- `npm test`: 234 pass (228 + 6 new).
+- Real weeks, each against the week before: 4 comparisons in under 50 ms each; this week's state unchanged in every one.
+- Real browser (Chromium): opening this week's snapshot then loading last week's fills the panel; editing a threshold re-renders it with no console errors.
 
 ## Out of scope
 Comparing against payroll or settings exports (snapshot only). Multi-week trends.

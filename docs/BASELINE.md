@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00037 (2026-10-12).
+Feature Card since — last updated FC-00041 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -93,7 +93,8 @@ commit.
   for both export AND import. The importer matches on **column name**, so V1 and V2
   files still load and any column they lack takes its default (`Active` → true,
   aliases left untouched). **Not carried:** the roster itself, which still comes from
-  the schedule file.
+  the schedule file. A second sheet, **Tool Settings** (`Setting | Value`), carries
+  owner-level values: week-over-week hours swing and pay swing % (FC-00041).
 
 ## 3. Screens
 
@@ -131,6 +132,8 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    Rounded Final / Diff, plus a per-day break override row per employee). Sort toggle:
    schedule order vs pay-type grouping (Cash → Deposit+Cash → Deposit). All-entity
    preview table mirroring the export. 12 export buttons + settings export/import.
+   Below them, **Since last week** (FC-00041): load last week's snapshot to list new /
+   missing people, setting changes, hours or pay swings and entity totals (read-only).
    Below it, the read-only *Combined export preview* (FC-00013) has a "Make editable
    copy" button (FC-00024): an independent, in-memory scratch table where every cell
    is editable, exportable as-is to .xlsx/.pdf, refreshable from the preview, and

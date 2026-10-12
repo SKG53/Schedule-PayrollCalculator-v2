@@ -243,6 +243,23 @@ table.sched tr.orphan-row-quiet td.name-cell::before{content:none}
 .history-table tr.reverted td{color:var(--text3);text-decoration:line-through}
 .history-table tr.reverted td.act{text-decoration:none}
 .history-empty{font-size:13px;color:var(--text3);padding:8px 0}
+/* FC-00041: Since last week panel */
+.wow-panel{margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:13px}
+.wow-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wow-head h3{font-size:15px;font-weight:700;margin:0}
+.wow-src{font-size:12px;color:var(--text2)}
+.wow-empty{color:var(--text3);padding:8px 0 2px}
+.wow-warn{margin-top:10px;padding:8px 12px;border-radius:8px;background:#FEF3C7;color:#78350F;border:1px solid #FCD34D}
+.wow-thr{margin:10px 0 4px;color:var(--text2);font-size:12px}
+.wow-thr input{width:56px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:12px}
+.wow-panel h4{font-size:12px;font-weight:700;margin:14px 0 4px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text2)}
+.wow-n{display:inline-block;min-width:18px;padding:0 6px;border-radius:999px;background:#E8E8E4;color:var(--text);font-size:11px;text-align:center}
+.wow-table{width:100%;border-collapse:collapse;font-size:12px}
+.wow-table th{text-align:left;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border);padding:4px 6px}
+.wow-table td{border-bottom:1px solid var(--grid-line);padding:4px 6px;font-family:'IBM Plex Mono',monospace;font-size:11.5px}
+.wow-table td:nth-child(1),.wow-table td:nth-child(2){font-family:inherit;font-size:12px}
+.wow-hit{color:var(--red);font-weight:600}
+.wow-diff{color:var(--text3)}
 /* FC-00037: snapshot re-attach banner + small thumbnails */
 .snapshot-reattach{display:flex;gap:14px;align-items:center;justify-content:space-between;padding:12px 16px;margin-bottom:12px;border:1px solid #FCD34D;background:#FFFBEB;border-radius:10px;font-size:13px;color:#78350F}
 .snapshot-missing{font-size:12px;color:var(--text2);margin-top:4px}
@@ -729,6 +746,9 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
         </div>
       </div>
     </div>
+
+    <!-- FC-00041: Since last week (read-only comparison with last week's snapshot) -->
+    <div id="wowHost"></div>
   </div>
 </div></div>
 <div class="tooltip" id="tip"><div class="tt-name"></div><div class="tt-time"></div><div class="tt-hrs"></div></div>
@@ -812,6 +832,7 @@ function createSession(){
     rosterAliases:_guardedStore('rosterAliases'),
     flatWages:_guardedStore('flatWages'),
     flatWagesDisplayNames:{},
+    toolSettings:{}, // FC-00041: owner-level settings (thresholds, labels); defaults in TOOL_SETTING_DEFAULTS
     _dispatching:false
   };
 }
@@ -1399,6 +1420,7 @@ function _applyChange(entry,invert){
   const key=target.id||wKey(entId,empName);
   const value=invert?entry.from:entry.to;
   if(_REVIEW_LOG_TYPES.has(entry.type)){_applyReviewChange(entry,invert);return;}
+  if(entry.type==='toolSetting'){if(!session.toolSettings)session.toolSettings={};session.toolSettings[target.field]=value;return;}
   _withSessionMutation(()=>{
     if(entry.type==='wage'){
       if(value==null||value===''){delete wageRates[key];wageBlank[key]=true;_applyRecordMirror(entId,empName,'rate',null);}
@@ -1538,6 +1560,7 @@ function _captureState(){
     flatWagesDisplayNames:_cloneState(session.flatWagesDisplayNames),
     empIdSeq:_cloneState(session._empIdSeq||null),
     fileIdMax:_cloneState(session._fileIdMax||null),
+    toolSettings:_cloneState(session.toolSettings||{}),
     stores:{},
     startedAt:session.startedAt,
     ui:{nextEntityId,activeEntityIdx,activePayrollEntityIdx,activePayrollSubTab:_cloneState(activePayrollSubTab),currentTab,currentView,flagView,activeEmp}
@@ -1580,6 +1603,7 @@ function _restoreState(st,opts){
   _refill(session.flatWagesDisplayNames,st.flatWagesDisplayNames);
   if(st.empIdSeq)session._empIdSeq=st.empIdSeq;else delete session._empIdSeq;
   if(st.fileIdMax)session._fileIdMax=st.fileIdMax;else delete session._fileIdMax;
+  session.toolSettings=st.toolSettings?st.toolSettings:{};
   _withSessionMutation(()=>{_STORE_NAMES.forEach(n=>_refill(session[n],st.stores[n]));});
   const u=st.ui||{};
   nextEntityId=u.nextEntityId!=null?u.nextEntityId:nextEntityId;
@@ -1742,6 +1766,7 @@ function _applyReviewChange(entry,invert){
 const _NON_REVERTABLE=new Set(['revert','rosterAdd']);
 function canRevertEntry(e){
   if(!e||e.reverted||_NON_REVERTABLE.has(e.type))return false;
+  if(e.type==='toolSetting')return true;
   if(!_REVIEW_LOG_TYPES.has(e.type))return !!_reducers[e.type];
   const t=e.target||{};
   if(e.type==='reviewEdit'||e.type==='reviewApprove')return !!findReviewRow(t.id);
@@ -1766,7 +1791,7 @@ const _HISTORY_KIND={wage:'Wage',wageBlank:'Wage',payMethod:'Pay method',splitDe
   breakOverride:'Break',entityBreak:'Entity break',sortMode:'Sort order',entityPaletteSet:'Palette',rosterAdd:'Added to roster',
   rosterRename:'Name',rosterAliasAdd:'Alias added',rosterAliasRemove:'Alias removed',rosterActiveSet:'Active',rosterFieldSet:'Roster field',
   reviewEdit:'Punch edit',reviewApprove:'Approval',reviewApproveBulk:'Approval (bulk)',reviewRowAdd:'Row added',reviewRowDelete:'Row deleted',
-  reviewIgnore:'Ignore time cards',revert:'Revert'};
+  reviewIgnore:'Ignore time cards',toolSetting:'Tool setting',revert:'Revert'};
 const _REVIEW_FIELD_LABEL={date:'Date',empName:'Employee',clockIn1:'In 1',clockOut1:'Out 1',clockIn2:'In 2',clockOut2:'Out 2',clockIn3:'In 3',clockOut3:'Out 3'};
 function _historyKind(e){
   if(e.type==='reviewEdit'&&e.target&&e.target.field==='empName')return'Employee assignment';
@@ -1779,6 +1804,7 @@ function _historyField(e){
   if(e.type==='reviewApproveBulk')return((e.meta&&e.meta.count)||0)+' row'+((e.meta&&e.meta.count)===1?'':'s');
   if(e.type==='breakOverride')return DAY_SHORT[t.day]||'';
   if(e.type==='rosterFieldSet')return t.field||'';
+  if(e.type==='toolSetting')return TOOL_SETTING_LABELS[t.field]||t.field||'';
   if(e.type==='revert'){const o=session.log.find(x=>x.id===e.originalId);return o?('#'+o.seq+' '+_historyKind(o)):'';}
   return'';
 }
@@ -2110,6 +2136,222 @@ function _onBeforeUnload(e){
   if(!hasUnsavedChanges())return false;
   if(e){e.preventDefault();e.returnValue='';}
   return true;
+}
+
+// ================================================================
+// Tool settings: values that belong to the owner rather than to one employee (thresholds,
+// file labels). Kept in session state (so Undo and the snapshot carry them) and written to
+// the settings file's "Tool Settings" sheet.
+// ================================================================
+const TOOL_SETTING_DEFAULTS={wowHours:8,wowPayPct:25};
+const TOOL_SETTING_LABELS={wowHours:'Week-over-week hours swing',wowPayPct:'Week-over-week pay swing %'};
+function getToolSetting(key){
+  const v=session.toolSettings&&session.toolSettings[key];
+  return v===undefined||v===null||v===''?TOOL_SETTING_DEFAULTS[key]:v;
+}
+function setToolSetting(key,val,screen){
+  if(typeof TOOL_SETTING_DEFAULTS[key]==='number'){
+    const n=parseFloat(val);
+    if(isNaN(n)||n<0){showToast(TOOL_SETTING_LABELS[key]+' must be a number of 0 or more','err');return false;}
+    val=n;
+  }
+  const from=getToolSetting(key);
+  if(from===val)return false;
+  if(!session.toolSettings)session.toolSettings={};
+  session.toolSettings[key]=val;
+  _record({type:'toolSetting',screen:screen||'payroll',target:{kind:'tool',field:key},from,to:val,meta:{}});
+  return true;
+}
+function _toolSettingsRows(){
+  return Object.keys(TOOL_SETTING_DEFAULTS).map(k=>[TOOL_SETTING_LABELS[k],getToolSetting(k)]);
+}
+// rows: [[label,value],…] from the settings file's Tool Settings sheet. Unknown labels are ignored.
+function _ingestToolSettings(rows){
+  const byLabel={};Object.keys(TOOL_SETTING_LABELS).forEach(k=>{byLabel[TOOL_SETTING_LABELS[k].toLowerCase()]=k;});
+  let n=0;
+  (rows||[]).forEach(r=>{
+    const k=byLabel[String((r&&r[0])||'').trim().toLowerCase()];
+    if(!k||r[1]===''||r[1]==null)return;
+    if(setToolSetting(k,r[1],'settings'))n++;
+  });
+  return n;
+}
+
+// ================================================================
+// FC-00041 — week-over-week check against last week's snapshot (read-only)
+// ================================================================
+// Last week's snapshot is evaluated by briefly swapping it into the live session, computing
+// the same export data the tool would have produced, and swapping the live objects straight
+// back (same objects, nothing re-created), all synchronously. The comparison model itself is
+// never saved anywhere and never changes this week's data.
+let _wowLast=null;
+function _stashLive(){
+  const stores={};_STORE_NAMES.forEach(n=>{stores[n]=Object.assign({},session[n]);});
+  return{entities:entities.slice(),byId:Object.assign({},session.roster.byId),keyToId:Object.assign({},session.roster.keyToId),
+    log:session.log.slice(),seq:session.seq,startedAt:session.startedAt,sessAd:session.actualDays.slice(),adRef:actualDays,adItems:actualDays.slice(),
+    rounding:Object.assign({},session.roundingFactors),fwdn:Object.assign({},session.flatWagesDisplayNames),
+    empIdSeq:session._empIdSeq,fileIdMax:session._fileIdMax,toolSettings:session.toolSettings,stores,
+    ui:{nextEntityId,activeEntityIdx,activePayrollEntityIdx,currentTab,currentView,flagView,activeEmp},apst:Object.assign({},activePayrollSubTab)};
+}
+function _unstashLive(s){
+  entities.length=0;s.entities.forEach(e=>entities.push(e));
+  _refill(session.roster.byId,s.byId);_refill(session.roster.keyToId,s.keyToId);
+  session.log.length=0;s.log.forEach(e=>session.log.push(e));
+  session.seq=s.seq;session.startedAt=s.startedAt;
+  session.actualDays.length=0;s.sessAd.forEach(d=>session.actualDays.push(d));
+  actualDays=s.adRef;if(actualDays!==session.actualDays){actualDays.length=0;s.adItems.forEach(d=>actualDays.push(d));}
+  _refill(session.roundingFactors,s.rounding);_refill(session.flatWagesDisplayNames,s.fwdn);
+  if(s.empIdSeq)session._empIdSeq=s.empIdSeq;else delete session._empIdSeq;
+  if(s.fileIdMax)session._fileIdMax=s.fileIdMax;else delete session._fileIdMax;
+  session.toolSettings=s.toolSettings;
+  _withSessionMutation(()=>{_STORE_NAMES.forEach(n=>_refill(session[n],s.stores[n]));});
+  ({nextEntityId,activeEntityIdx,activePayrollEntityIdx,currentTab,currentView,flagView,activeEmp}=s.ui);
+  _refill(activePayrollSubTab,s.apst);
+}
+function _weekStartIso(){
+  const e=entities.find(x=>x.dateLabels&&x.dateLabels[0]);
+  return e?(schedLabelToIso(e.dateLabels[0])||''):'';
+}
+// Everyone on payroll this week and every roster record, keyed by permanent employee ID.
+function _wowCollect(){
+  const people={},ents={};
+  _collectExportData().forEach(d=>{
+    const ent=entities.find(e=>e.id===d.entityId)||{};
+    const ekey=ent.code||_resolveEntityCode(ent.name);
+    const et=ents[ekey]||(ents[ekey]={key:ekey,name:d.entityName,hours:0,actual:0,deposit:0,cash:0});
+    d.rows.forEach(r=>{
+      const id=wKey(d.entityId,r._empName);
+      const h=r.isFlat?0:(r.actualHours||0);
+      const p=people[id]||(people[id]={id,name:r._empName,entity:d.entityName,hours:0,pay:0,deposit:0,cash:0,present:true});
+      p.hours+=h;p.pay+=r._breakdown.actualFinal||0;p.deposit+=r._breakdown.deposit||0;p.cash+=r._breakdown.cash||0;
+      et.hours+=h;et.actual+=r._breakdown.actualFinal||0;et.deposit+=r._breakdown.deposit||0;et.cash+=r._breakdown.cash||0;
+    });
+  });
+  const settings={};
+  Object.values(session.roster.byId).forEach(rec=>{
+    const id=rec.id;const ent=entities.find(e=>e.id===rec.entity);
+    const sp=splitAmounts[id];
+    settings[id]={id,name:rec.canonical_name,entity:ent?ent.name:'',rate:typeof wageRates[id]==='number'?wageRates[id]:null,blank:!!wageBlank[id],
+      method:payMethod[id]||'deposit',deposit:sp&&typeof sp.deposit==='number'?sp.deposit:null,flat:typeof flatWages[id]==='number'?flatWages[id]:null,active:rosterActive[id]!==false};
+  });
+  const r2=v=>Math.round(v*100)/100;
+  Object.values(people).forEach(p=>{p.hours=r2(p.hours);p.pay=r2(p.pay);p.deposit=r2(p.deposit);p.cash=r2(p.cash);});
+  Object.values(ents).forEach(t=>{t.hours=r2(t.hours);t.actual=r2(t.actual);t.deposit=r2(t.deposit);t.cash=r2(t.cash);});
+  return{people,settings,entities:ents,weekStart:_weekStartIso(),weekTag:_weekRangeTag()};
+}
+// Builds the read-only model of a snapshot without changing anything in this session.
+function _wowModelFromSnapshot(snap){
+  const stash=_stashLive();
+  let model;
+  try{
+    const st=_cloneState(snap.state);
+    _resolveSnapshotImages(st,snap.images||[]);
+    _restoreState(st,{ui:false});
+    model=_wowCollect();
+  }finally{
+    _unstashLive(stash);
+  }
+  return model;
+}
+function loadLastWeekSnapshot(snap,label){
+  const err=_validateSnapshot(snap);
+  if(err){alert(err);return{ok:false,error:err};}
+  if(_busyForSnapshot()){showToast('An action is still running. Load last week when it finishes.','err');return{ok:false,error:'busy'};}
+  _wowLast=Object.assign(_wowModelFromSnapshot(snap),{label:label||'',savedAt:snap.savedAt||''});
+  renderWowPanel();
+  return{ok:true};
+}
+function loadLastWeekSnapshotFile(file){
+  if(!file)return;
+  const r=new FileReader();
+  r.onload=()=>{let snap;try{snap=JSON.parse(String(r.result));}catch(e){alert('This file is not a session snapshot from this tool.');return;}loadLastWeekSnapshot(snap,file.name);};
+  r.readAsText(file);
+}
+function clearLastWeek(){_wowLast=null;renderWowPanel();}
+const _WOW_METHOD={deposit:'Deposit',cash:'Cash',both:'Deposit + Cash',contract:'Contract Check'};
+function weekOverWeek(){
+  if(!_wowLast)return null;
+  const last=_wowLast,cur=_wowCollect();
+  const thrH=getToolSetting('wowHours'),thrP=getToolSetting('wowPayPct');
+  const out={newPeople:[],missing:[],rate:[],blank:[],method:[],deposit:[],flat:[],active:[],swings:[],entities:[],warning:'',thresholds:{hours:thrH,payPct:thrP}};
+  const lp=last.people,cp=cur.people,ls=last.settings,cs=cur.settings;
+  const nm=id=>(cs[id]&&cs[id].name)||(cp[id]&&cp[id].name)||(ls[id]&&ls[id].name)||(lp[id]&&lp[id].name)||id;
+  const en=id=>(cp[id]&&cp[id].entity)||(cs[id]&&cs[id].entity)||(lp[id]&&lp[id].entity)||(ls[id]&&ls[id].entity)||'';
+  Object.values(cp).forEach(p=>{if(!lp[p.id])out.newPeople.push({id:p.id,name:nm(p.id),entity:en(p.id),hours:p.hours,pay:p.pay});});
+  // Paid last week and either gone from payroll or on it at $0 this week.
+  Object.values(lp).forEach(p=>{if(p.pay>0&&(!cp[p.id]||!(cp[p.id].pay>0)))out.missing.push({id:p.id,name:nm(p.id),entity:en(p.id),lastHours:p.hours,lastPay:p.pay,active:cs[p.id]?cs[p.id].active:null,onPayroll:!!cp[p.id]});});
+  const isMissing=new Set(out.missing.map(m=>m.id));
+  // Settings: anyone on payroll in either week, plus anyone whose Active flag moved.
+  const ids=new Set([...Object.keys(cp),...Object.keys(lp)]);
+  Object.keys(cs).forEach(id=>{if(ls[id]&&ls[id].active!==cs[id].active)ids.add(id);});
+  ids.forEach(id=>{
+    const a=ls[id],b=cs[id];if(!b)return;
+    const base={id,name:nm(id),entity:en(id)};
+    if(cp[id]&&b.blank&&!(cp[id].hours===0))out.blank.push(Object.assign({},base,{last:a?(a.blank?null:a.rate):null}));
+    if(!a)return;
+    if(a.rate!=null&&b.rate!=null&&a.rate!==b.rate&&!b.blank)out.rate.push(Object.assign({},base,{from:a.rate,to:b.rate}));
+    if(a.method!==b.method)out.method.push(Object.assign({},base,{from:_WOW_METHOD[a.method]||a.method,to:_WOW_METHOD[b.method]||b.method}));
+    if((a.method==='both'||b.method==='both')&&a.method===b.method&&(a.deposit||0)!==(b.deposit||0))out.deposit.push(Object.assign({},base,{from:a.deposit,to:b.deposit}));
+    if((a.flat||null)!==(b.flat||null))out.flat.push(Object.assign({},base,{from:a.flat,to:b.flat}));
+    if(a.active!==b.active)out.active.push(Object.assign({},base,{from:a.active,to:b.active}));
+  });
+  Object.values(cp).forEach(p=>{
+    const q=lp[p.id];if(!q||isMissing.has(p.id))return;
+    const dh=Math.round((p.hours-q.hours)*100)/100,dp=Math.round((p.pay-q.pay)*100)/100;
+    const pct=q.pay>0?Math.round(dp/q.pay*1000)/10:(p.pay>0?100:0);
+    const hoursHit=Math.abs(dh)>=thrH,payHit=Math.abs(pct)>=thrP;
+    if(hoursHit||payHit)out.swings.push({id:p.id,name:nm(p.id),entity:en(p.id),lastHours:q.hours,hours:p.hours,dh,lastPay:q.pay,pay:p.pay,dp,pct,hoursHit,payHit});
+  });
+  const keys=[...new Set([...Object.keys(last.entities),...Object.keys(cur.entities)])];
+  keys.forEach(k=>{
+    const a=last.entities[k]||{hours:0,actual:0,deposit:0,cash:0},b=cur.entities[k]||{hours:0,actual:0,deposit:0,cash:0};
+    const d=f=>Math.round((b[f]-a[f])*100)/100;
+    out.entities.push({key:k,name:(cur.entities[k]||last.entities[k]).name,last:a,cur:b,diff:{hours:d('hours'),actual:d('actual'),deposit:d('deposit'),cash:d('cash')}});
+  });
+  if(!last.weekStart||!cur.weekStart)out.warning='The week of '+(!last.weekStart?'the loaded snapshot':'this session')+' is unknown (no schedule dates), so it cannot be checked that the snapshot is from an earlier week.';
+  else if(last.weekStart>=cur.weekStart)out.warning='The loaded snapshot is from the '+(last.weekStart===cur.weekStart?'same week':'a later week')+' (week of '+last.weekStart+') as this session (week of '+cur.weekStart+'). Load the previous week\'s snapshot to compare.';
+  const sortFn=(x,y)=>(x.entity||'').localeCompare(y.entity||'')||(x.name||'').localeCompare(y.name||'');
+  ['newPeople','missing','rate','blank','method','deposit','flat','active','swings'].forEach(k=>out[k].sort(sortFn));
+  return out;
+}
+function _wowMoney(v){return v==null?'(none)':'$'+(+v).toFixed(2)}
+function _wowSigned(v,money){const s=v>0?'+':(v<0?'−':'');const a=Math.abs(v);return s+(money?'$'+a.toFixed(2):a.toFixed(2));}
+function _wowPanelHtml(){
+  let h='<div class="wow-panel"><div class="wow-head"><h3>Since last week</h3>';
+  const pick=`<label class="btn" style="font-size:12px;padding:5px 12px">${_wowLast?'Change file…':'Load last week\'s snapshot…'}<input type="file" accept=".json,application/json" style="display:none" onchange="loadLastWeekSnapshotFile(this.files[0]);this.value=''"></label>`;
+  if(!_wowLast){
+    return h+pick+'</div><div class="wow-empty">Load last week\'s snapshot file to see who is new or missing, which settings changed, and whose hours or pay moved a lot. Read-only: nothing in this week changes.</div></div>';
+  }
+  const w=weekOverWeek();
+  h+=`<span class="wow-src">vs ${escHtml(_wowLast.label||'snapshot')}${_wowLast.weekStart?' · week of '+escHtml(_wowLast.weekStart):''}</span><span style="flex:1"></span>${pick}<button class="btn" style="font-size:12px;padding:5px 12px" onclick="clearLastWeek()">Clear</button></div>`;
+  if(w.warning)h+=`<div class="wow-warn">⚠ ${escHtml(w.warning)}</div>`;
+  h+=`<div class="wow-thr">Flag a swing at ± <input type="number" min="0" step="0.5" value="${w.thresholds.hours}" onchange="setToolSetting('wowHours',this.value);setTimeout(renderWowPanel,0)"> hours or ± <input type="number" min="0" step="1" value="${w.thresholds.payPct}" onchange="setToolSetting('wowPayPct',this.value);setTimeout(renderWowPanel,0)"> % of pay <span style="color:var(--text3)">(saved in the settings file and the snapshot)</span></div>`;
+  const sec=(title,list,cols,row)=>{
+    if(!list.length)return'';
+    return`<h4>${escHtml(title)} <span class="wow-n">${list.length}</span></h4><table class="wow-table"><thead><tr><th>Entity</th><th>Employee</th>${cols.map(c=>'<th>'+c+'</th>').join('')}</tr></thead><tbody>`+
+      list.map(x=>`<tr><td>${escHtml(x.entity)}</td><td>${escHtml(x.name)}</td>${row(x).map(c=>'<td>'+c+'</td>').join('')}</tr>`).join('')+'</tbody></table>';
+  };
+  let body='';
+  body+=sec('New this week',w.newPeople,['Hours','Pay'],x=>[x.hours.toFixed(2),_wowMoney(x.pay)]);
+  body+=sec('Paid last week, missing this week',w.missing,['Last hours','Last pay','Now'],x=>[x.lastHours.toFixed(2),_wowMoney(x.lastPay),x.active===false?'Active unchecked':(x.onPayroll?'on payroll at $0.00':'not on payroll')]);
+  body+=sec('Blank rate',w.blank,['Last week'],x=>[x.last==null?'(none)':_wowMoney(x.last)]);
+  body+=sec('Rate changed',w.rate,['Last week','This week'],x=>[_wowMoney(x.from),_wowMoney(x.to)]);
+  body+=sec('Pay method changed',w.method,['Last week','This week'],x=>[escHtml(x.from),escHtml(x.to)]);
+  body+=sec('Deposit amount changed',w.deposit,['Last week','This week'],x=>[_wowMoney(x.from),_wowMoney(x.to)]);
+  body+=sec('Flat amount changed',w.flat,['Last week','This week'],x=>[_wowMoney(x.from),_wowMoney(x.to)]);
+  body+=sec('Active switched',w.active,['Last week','This week'],x=>[x.from?'Active':'Inactive',x.to?'Active':'Inactive']);
+  body+=sec('Hours or pay swing',w.swings,['Hours','Δ hours','Pay','Δ pay'],x=>[x.lastHours.toFixed(2)+' → '+x.hours.toFixed(2),`<span class="${x.hoursHit?'wow-hit':''}">${_wowSigned(x.dh)}</span>`,_wowMoney(x.lastPay)+' → '+_wowMoney(x.pay),`<span class="${x.payHit?'wow-hit':''}">${_wowSigned(x.dp,true)} (${x.pct>0?'+':''}${x.pct}%)</span>`]);
+  h+=body||'<div class="wow-empty">No differences above the thresholds.</div>';
+  h+='<h4>Entity totals</h4><table class="wow-table"><thead><tr><th>Entity</th><th>Hours</th><th>Actual total</th><th>Deposit</th><th>Cash</th></tr></thead><tbody>';
+  w.entities.forEach(e=>{
+    const c=f=>{const m=f!=='hours';const v=x=>m?_wowMoney(x):x.toFixed(2);return`${v(e.last[f])} → ${v(e.cur[f])} <span class="wow-diff">(${_wowSigned(e.diff[f],m)})</span>`;};
+    h+=`<tr><td>${escHtml(e.name)}</td><td>${c('hours')}</td><td>${c('actual')}</td><td>${c('deposit')}</td><td>${c('cash')}</td></tr>`;
+  });
+  return h+'</tbody></table></div>';
+}
+function renderWowPanel(){
+  const host=document.getElementById('wowHost');
+  if(host)host.innerHTML=_wowPanelHtml();
 }
 function recompute(opts){
   const idx=entities.findIndex(e=>e.id===(opts&&opts.entity));
@@ -3316,6 +3558,7 @@ function renderPayroll(){
   if(!entities[activePayrollEntityIdx])activePayrollEntityIdx=0;
   renderPayrollEntityTabBar();
   renderPayrollEntityContent(activePayrollEntityIdx);
+  renderWowPanel();
 }
 
 function renderPayrollEntityContent(idx){
@@ -7620,6 +7863,11 @@ async function exportPayrollSettingsExcel(includeBreaks){
   const widths=baseW.concat(breakW);
   ws.columns.forEach((col,i)=>{col.width=widths[i]||14;});
   ws.views=[{state:'frozen',ySplit:4}];
+  // Owner-level settings (thresholds, file labels) ride along on their own sheet.
+  const ts=ewb.addWorksheet('Tool Settings');
+  const tsh=ts.addRow(['Setting','Value']);tsh.eachCell(c=>{c.font={bold:true,size:10};c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFE8E8E4'}};});
+  _toolSettingsRows().forEach(r=>ts.addRow(r));
+  ts.columns.forEach((col,i)=>{col.width=i===0?34:16;});
   const fname=(includeBreaks?'Payroll_Settings_with_Breaks_':'Payroll_Settings_')+new Date().toISOString().slice(0,10)+'.xlsx';
   downloadBlob(await ewb.xlsx.writeBuffer(),fname);
   showToast(`Exported ${fname} — ${rows.length} employee setting${rows.length===1?'':'s'}`+(includeBreaks?' (incl. breaks)':''),'ok');
@@ -7655,7 +7903,9 @@ function importPayrollSettingsFile(file,includeBreaks){
       // includeBreaks=true: file's break columns (if present) will overwrite per-day overrides + entity default break.
       // includeBreaks=false: even if the file HAS break columns, they are intentionally ignored — existing
       // break state stays untouched. This is the safety mechanism the user asked for.
-      _withCheckpoint('Settings import · '+(file.name||'file'),()=>_ingestPayrollSettings(data.slice(headerRow+1),colMap,!!includeBreaks));
+      const tsName=wb.SheetNames.find(n=>/tool\s*settings/i.test(n));
+      const tsRows=tsName?XLSX.utils.sheet_to_json(wb.Sheets[tsName],{header:1,defval:'',raw:false}).slice(1):[];
+      _withCheckpoint('Settings import · '+(file.name||'file'),()=>{_ingestPayrollSettings(data.slice(headerRow+1),colMap,!!includeBreaks);_ingestToolSettings(tsRows);});
     }catch(err){alert('Error reading file: '+err.message);}
   };
   reader.readAsArrayBuffer(file);
