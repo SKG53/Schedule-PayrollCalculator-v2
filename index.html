@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 :root{--bg:#FAFAF8;--surface:#FFF;--border:#E5E3DC;--text:#1A1A18;--text2:#6B6960;--text3:#9E9B90;--grid-line:#EDEBE5;--alt-hour:rgba(0,0,0,0.022);--red:#DC2626;--green:#16A34A;--blue:#2563EB;--amber:#D97706;--dark-orange:#C2410C}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -243,6 +244,24 @@ table.sched tr.orphan-row-quiet td.name-cell::before{content:none}
 .history-table tr.reverted td{color:var(--text3);text-decoration:line-through}
 .history-table tr.reverted td.act{text-decoration:none}
 .history-empty{font-size:13px;color:var(--text3);padding:8px 0}
+/* FC-00040: Downloads panel */
+.dl-panel{margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:13px}
+.dl-labels{margin:10px 0;font-size:12px;color:var(--text2);display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.dl-labels input{width:110px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:12px}
+.dl-table{width:100%;border-collapse:collapse}
+.dl-table td{border-top:1px solid var(--grid-line);padding:8px 6px;vertical-align:top}
+.dl-name{width:46%}
+.dl-desc{font-size:12px;color:var(--text2)}
+.dl-files{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);margin-top:3px;overflow-wrap:anywhere}
+.dl-fmts{white-space:nowrap}
+.dl-fmt{margin-right:12px;font-size:12px;cursor:pointer}
+.dl-fmt input{width:auto;margin-right:3px}
+.dl-status{font-size:12px}
+.dl-ok{color:var(--green);font-weight:600}
+.dl-warn{color:var(--amber)}
+.dl-soon{font-size:12px;color:var(--text3);font-style:italic}
+tr.dl-disabled td{opacity:0.55}
+.dl-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 /* FC-00041: Since last week panel */
 .wow-panel{margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:13px}
 .wow-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -794,6 +813,9 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
 
     <!-- FC-00041: Since last week (read-only comparison with last week's snapshot) -->
     <div id="wowHost"></div>
+
+    <!-- FC-00040: Downloads (every export on one list) -->
+    <div id="downloadsHost"></div>
   </div>
 </div></div>
 <div class="tooltip" id="tip"><div class="tt-name"></div><div class="tt-time"></div><div class="tt-hrs"></div></div>
@@ -845,6 +867,8 @@ function setTestMode(v){_testMode=!!v}
 // FC-00038: true while a settings preview runs the importer against a copy of the session
 // (no toasts, alerts or renders); _importing marks log lines written by a settings import.
 let _simulating=false,_importing=false;
+// FC-00040: while set, export writers hand their files to this list instead of the browser.
+let _dlCapture=null;
 function _isUserIntentStore(name){return['wageRates','wageBlank','payMethod','splitAmounts','flatWages','breakOverrides','rosterActive','rosterAliases','payrollSortMode','entityPalettes'].includes(name)}
 function _guardedStore(name){
   const obj={};
@@ -1866,7 +1890,7 @@ function _historyField(e){
   if(e.type==='reviewApproveBulk')return((e.meta&&e.meta.count)||0)+' row'+((e.meta&&e.meta.count)===1?'':'s');
   if(e.type==='breakOverride')return DAY_SHORT[t.day]||'';
   if(e.type==='rosterFieldSet')return t.field||'';
-  if(e.type==='toolSetting')return TOOL_SETTING_LABELS[t.field]||t.field||'';
+  if(e.type==='toolSetting')return _toolSettingLabel(t.field||'');
   if(e.type==='revert'){const o=session.log.find(x=>x.id===e.originalId);return o?('#'+o.seq+' '+_historyKind(o)):'';}
   return'';
 }
@@ -1971,6 +1995,8 @@ let _lastSavedSig=null;
 // ---- File naming shared by every download (FC-00040 uses the same stem) ----
 const _DEFAULT_FILE_LABELS={N11:'Nirvana',ZIO:'Zion',HEF:'Hefner'};
 function _entityFileLabel(ent){
+  const set=ent&&session.toolSettings?session.toolSettings['label:'+_aliasNorm(ent.name||'')]:null;
+  if(set)return set;
   if(ent&&ent.fileLabel)return ent.fileLabel;
   const d=_DEFAULT_FILE_LABELS[(ent&&ent.code)||_resolveEntityCode(ent&&ent.name)];
   return d||(((ent&&ent.name)||'').replace(/[^A-Za-z0-9]+/g,'')||'Entity');
@@ -1993,6 +2019,7 @@ function _fileStem(){
   return labels.join('_')+(wk?'_'+wk:'');
 }
 function _downloadText(text,filename,mime){
+  if(_dlCapture){_dlCapture.push({name:filename,data:text,type:mime||'application/json'});return;}
   const blob=new Blob([text],{type:mime||'application/json'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=filename;
@@ -2227,15 +2254,26 @@ function setToolSetting(key,val,screen){
   _record({type:'toolSetting',screen:screen||'payroll',target:{kind:'tool',field:key},from,to:val,meta:{}});
   return true;
 }
+function _toolSettingLabel(k){
+  if(TOOL_SETTING_LABELS[k])return TOOL_SETTING_LABELS[k];
+  if(String(k).startsWith('label:')){const e=entities.find(x=>_aliasNorm(x.name||'')===k.slice(6));return'File label · '+(e?e.name:k.slice(6));}
+  return k;
+}
 function _toolSettingsRows(){
-  return Object.keys(TOOL_SETTING_DEFAULTS).map(k=>[TOOL_SETTING_LABELS[k],getToolSetting(k)]);
+  const rows=Object.keys(TOOL_SETTING_DEFAULTS).map(k=>[TOOL_SETTING_LABELS[k],getToolSetting(k)]);
+  // FC-00040: file labels, one row per entity that has one set.
+  Object.keys(session.toolSettings||{}).filter(k=>k.startsWith('label:')).sort().forEach(k=>rows.push([_toolSettingLabel(k),session.toolSettings[k]]));
+  return rows;
 }
 // rows: [[label,value],…] from the settings file's Tool Settings sheet. Unknown labels are ignored.
 function _ingestToolSettings(rows){
   const byLabel={};Object.keys(TOOL_SETTING_LABELS).forEach(k=>{byLabel[TOOL_SETTING_LABELS[k].toLowerCase()]=k;});
   let n=0;
   (rows||[]).forEach(r=>{
-    const k=byLabel[String((r&&r[0])||'').trim().toLowerCase()];
+    const lab=String((r&&r[0])||'').trim();
+    const fl=lab.match(/^file label\s*·\s*(.+)$/i);
+    if(fl){const v=String(r[1]||'').replace(/[^A-Za-z0-9_-]+/g,'');if(v&&setToolSetting('label:'+_aliasNorm(fl[1]),v,'settings'))n++;return;}
+    const k=byLabel[lab.toLowerCase()];
     if(!k||r[1]===''||r[1]==null)return;
     if(setToolSetting(k,r[1],'settings'))n++;
   });
@@ -2783,8 +2821,9 @@ function _computeStagePreview(){
     if(diffs.length)changes.push({row:null,id:'',entity:ea.name||'',name:'(entity)',diffs});
   });
   // Tool settings (thresholds).
-  const tdiffs=Object.keys(TOOL_SETTING_DEFAULTS).filter(k=>{const a=(after.toolSettings||{})[k],b=(before.toolSettings||{})[k];return a!==undefined&&a!==b;})
-    .map(k=>({field:k,label:TOOL_SETTING_LABELS[k],from:String(getToolSetting(k)),to:String(after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.target&&e.target.field===k)}));
+  const tkeys=[...new Set([...Object.keys(TOOL_SETTING_DEFAULTS),...Object.keys(after.toolSettings||{})])];
+  const tdiffs=tkeys.filter(k=>{const a=(after.toolSettings||{})[k],b=(before.toolSettings||{})[k];return a!==undefined&&a!==b;})
+    .map(k=>({field:k,label:_toolSettingLabel(k),from:String(getToolSetting(k)===undefined?'(none)':getToolSetting(k)),to:String(after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.target&&e.target.field===k)}));
   if(tdiffs.length)changes.push({row:null,id:'',entity:'',name:'(tool settings)',diffs:tdiffs});
   // Not in file: session people of the file's entities the file does not mention.
   const fileEnts=new Set(rows.map(r=>r.entityName.toLowerCase().trim()));
@@ -2891,6 +2930,161 @@ function _renderStageOverlay(open){
   document.getElementById('stageBody').innerHTML=_stageHtml();
   ov.style.display='flex';
 }
+
+// ================================================================
+// FC-00040 — Downloads: every export on one list, saved one by one or as one zip
+// ================================================================
+// Each line calls the existing export writer with downloads captured (downloadBlob,
+// _savePdf and _downloadText hand their bytes to the capture instead of the browser), then
+// saves the bytes under the owner's file-name convention. No export's content changes.
+async function _captureOne(fn){
+  const prev=_dlCapture;const cap=[];cap.breaksOk=true;_dlCapture=cap;
+  try{await fn();}finally{_dlCapture=prev;}
+  return cap;
+}
+function _mmddRange(labels){
+  const a=labels&&labels[0]?schedLabelToIso(labels[0]):'',b=labels&&labels[6]?schedLabelToIso(labels[6]):'';
+  return a&&b?a.slice(5,7)+a.slice(8,10)+'to'+b.slice(5,7)+b.slice(8,10):'';
+}
+const _PAYROLL_KINDS=['payroll','cashOnly','depositOnly','timecardData','payrollCalc','full'];
+const DOWNLOADS=[
+  {key:'payroll',label:'Payroll report',desc:'Combined report: every entity, hours, rate, deposit and cash, with totals.',formats:{xlsx:true,pdf:true},suffix:'AllEmployeesPayroll',run:{xlsx:()=>_exportExcel('combined'),pdf:()=>_exportPdf('combined')}},
+  {key:'timecards',label:'Reviewed timecards',desc:'Every punch row with its approval — re-importable on Actuals Intake.',formats:{xlsx:true,pdf:false},suffix:'AllEmployeesTimecards',run:{xlsx:()=>exportActualsIntakeExcel(),pdf:()=>exportActualsIntakePdf()}},
+  {key:'settings',label:'Settings (new master)',desc:'Every employee\'s ID, name, aliases, rate, pay method and Active, plus tool settings and file labels.',formats:{xlsx:true},suffix:'AllEmployeesPayroll_Settings',run:{xlsx:()=>exportPayrollSettingsExcel(false)}},
+  {key:'snapshot',label:'Snapshot',desc:'The whole session in one file, to reopen every screen exactly as it is now.',formats:{json:true},suffix:'Snapshot'},
+  {key:'accountant',label:'Accountant file',desc:'Coming soon — the format is being agreed with the accountant.',formats:{},disabled:true},
+  {key:'cashOnly',label:'Cash-only report',desc:'Cash payees only.',formats:{xlsx:false,pdf:false},suffix:'CashOnly',run:{xlsx:()=>_exportExcel('cashOnly'),pdf:()=>_exportPdf('cashOnly')}},
+  {key:'depositOnly',label:'Deposit-only report',desc:'Deposit payees only.',formats:{xlsx:false,pdf:false},suffix:'DepositOnly',run:{xlsx:()=>_exportExcel('depositOnly'),pdf:()=>_exportPdf('depositOnly')}},
+  {key:'timecardData',label:'Time Card Data',desc:'Expected vs actual hours and breaks per employee.',formats:{xlsx:false,pdf:false},suffix:'TimeCardData',run:{xlsx:()=>_exportExcel('timecard'),pdf:()=>_exportPdf('timecard')}},
+  {key:'payrollCalc',label:'Payroll Calculation',desc:'Rate, hours and pay detail per employee.',formats:{xlsx:false,pdf:false},suffix:'PayrollCalculation',run:{xlsx:()=>_exportExcel('payrollCalc'),pdf:()=>_exportPdf('payrollCalc')}},
+  {key:'full',label:'Full report',desc:'Everything in one report.',formats:{xlsx:false,pdf:false},suffix:'FullReport',run:{xlsx:()=>_exportExcel('full'),pdf:()=>_exportPdf('full')}},
+  {key:'manager',label:'Manager schedule report',desc:'Next week\'s schedule with daily hours, one file per entity with a schedule.',formats:{xlsx:false},perEntity:true},
+];
+const _FMT_LABEL={xlsx:'Excel',pdf:'PDF',json:'Data file'};
+const _FMT_EXT={xlsx:'xlsx',pdf:'pdf',json:'json'};
+let _dlTicks={};
+function _dlTick(key,fmt){const t=_dlTicks[key];if(t&&fmt in t)return!!t[fmt];const d=DOWNLOADS.find(x=>x.key===key);return!!(d&&d.formats[fmt]);}
+function setDownloadTick(key,fmt,on){const d=DOWNLOADS.find(x=>x.key===key);if(!d||d.disabled||!(fmt in d.formats))return;_dlTicks[key]=Object.assign({},_dlTicks[key],{[fmt]:!!on});renderDownloadsPanel();}
+_registerSnapshotPart('downloadTicks',()=>_cloneState(_dlTicks),v=>{_dlTicks=v&&typeof v==='object'?_cloneState(v):{};});
+function _managerEntities(){return entities.map((e,i)=>({e,i})).filter(x=>(x.e.employees||[]).length>0);}
+// Exact file name(s) a line will save.
+function downloadFileNames(key){
+  const d=DOWNLOADS.find(x=>x.key===key);if(!d||d.disabled)return[];
+  const stem=_fileStem();
+  const out=[];
+  Object.keys(d.formats).forEach(f=>{
+    if(!_dlTick(key,f))return;
+    if(d.perEntity)_managerEntities().forEach(({e})=>{const r=_mmddRange(e.newDateLabels&&e.newDateLabels.some(Boolean)?e.newDateLabels:e.dateLabels);out.push(_entityFileLabel(e)+(r?'_'+r:'')+'_ManagerReport.'+_FMT_EXT[f]);});
+    else out.push(stem+'_'+d.suffix+'.'+_FMT_EXT[f]);
+  });
+  return out;
+}
+// ✓ or the reasons to look before sending. Never blocks a download (FC-00023).
+function downloadStatus(key){
+  const reasons=[];
+  const withData=entities.filter(_entityHasData);
+  const unapproved=()=>entities.forEach(e=>{const n=e.intake?(e.intake.reviewRows||[]).filter(r=>!r.approved).length:0;if(n)reasons.push((e.name||'Entity')+': '+n+' row'+(n===1?'':'s')+' not approved');});
+  if(_PAYROLL_KINDS.includes(key)){
+    if(!_collectExportData().length)reasons.push('No payroll rows yet');
+    unapproved();
+    const wk=_weekExclusionSummary();if(wk.count)reasons.push(wk.count+' punch day'+(wk.count===1?'':'s')+' outside the schedule week');
+    const ina=_inactiveExclusionSummary();if(ina.withPay.length)reasons.push('Active unchecked with hours: '+ina.withPay.map(x=>x.empName).join(', '));
+    const nb=withData.filter(e=>!e.breakMinutesSet);if(nb.length)reasons.push('Break not confirmed: '+nb.map(e=>e.name||'Entity').join(', '));
+  }else if(key==='timecards'){
+    if(!entities.some(e=>e.intake&&(e.intake.reviewRows||[]).length))reasons.push('No punch rows yet');
+    unapproved();
+  }else if(key==='settings'){
+    if(!Object.keys(session.roster.byId).length)reasons.push('No employees yet');
+  }else if(key==='snapshot'){
+    if(_busyForSnapshot())reasons.push('An action is still running');
+  }else if(key==='manager'){
+    if(!_managerEntities().length)reasons.push('No schedule loaded');
+  }
+  return{ok:!reasons.length,reasons};
+}
+// Writes every ticked file into memory: [{name,data,type}].
+async function buildSelectedDownloads(){
+  const files=[];
+  const ticked=DOWNLOADS.filter(d=>!d.disabled&&Object.keys(d.formats).some(f=>_dlTick(d.key,f)));
+  if(ticked.some(d=>_PAYROLL_KINDS.includes(d.key))&&!_confirmBreaksOrBail())return null;
+  const stem=_fileStem();
+  for(const d of ticked){
+    for(const f of Object.keys(d.formats)){
+      if(!_dlTick(d.key,f))continue;
+      if(d.key==='snapshot'){
+        if(_busyForSnapshot()){showToast('Snapshot skipped: an action is still running','err');continue;}
+        files.push({name:stem+'_Snapshot.json',data:JSON.stringify(await buildSnapshot()),type:'application/json',snapshot:true});
+        continue;
+      }
+      if(d.perEntity){
+        for(const {e,i} of _managerEntities()){
+          const cap=await _captureOne(()=>exportManager(i));
+          const r=_mmddRange(e.newDateLabels&&e.newDateLabels.some(Boolean)?e.newDateLabels:e.dateLabels);
+          cap.forEach(c=>files.push({name:_entityFileLabel(e)+(r?'_'+r:'')+'_ManagerReport.'+_FMT_EXT[f],data:c.data,type:c.type}));
+        }
+        continue;
+      }
+      const cap=await _captureOne(d.run[f]);
+      cap.forEach((c,j)=>files.push({name:stem+'_'+d.suffix+(j?'_'+(j+1):'')+'.'+_FMT_EXT[f],data:c.data,type:c.type}));
+    }
+  }
+  return files;
+}
+function _saveBytes(f){
+  const blob=(typeof Blob!=='undefined'&&f.data instanceof Blob)?f.data:new Blob([f.data],{type:f.type||'application/octet-stream'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=f.name;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+async function downloadSelected(){
+  const files=await buildSelectedDownloads();
+  if(!files)return null;
+  if(!files.length){showToast('Nothing ticked to download','err');return files;}
+  files.forEach(_saveBytes);
+  if(files.some(f=>f.snapshot))_lastSavedSig=_snapshotSig();
+  showToast('Downloaded '+files.length+' file'+(files.length===1?'':'s'),'ok');
+  return files;
+}
+async function downloadZip(){
+  if(typeof JSZip==='undefined'){showToast('The zip library did not load. Use "Download selected" instead, or reload the page.','err');return null;}
+  const files=await buildSelectedDownloads();
+  if(!files)return null;
+  if(!files.length){showToast('Nothing ticked to download','err');return null;}
+  const zip=new JSZip();
+  files.forEach(f=>zip.file(f.name,f.data));
+  const blob=await zip.generateAsync({type:'blob'});
+  const name=_fileStem()+'_All.zip';
+  _saveBytes({name,data:blob,type:'application/zip'});
+  if(files.some(f=>f.snapshot))_lastSavedSig=_snapshotSig();
+  showToast('Downloaded '+name+' · '+files.length+' file'+(files.length===1?'':'s'),'ok');
+  return{name,files:files.map(f=>f.name)};
+}
+// Per-entity file label (default Nirvana / Zion / Hefner by code). Saved as a tool setting, so
+// it rides in the settings file's Tool Settings sheet and in the snapshot.
+function setEntityFileLabel(idx,val){
+  const e=entities[idx];if(!e)return false;
+  const clean=String(val||'').replace(/[^A-Za-z0-9_-]+/g,'');
+  const key='label:'+_aliasNorm(e.name||'');
+  if(!clean){if(session.toolSettings&&key in session.toolSettings){const from=session.toolSettings[key];delete session.toolSettings[key];_record({type:'toolSetting',screen:'payroll',target:{kind:'tool',field:key},from,to:'',meta:{entityName:e.name||''}});}renderDownloadsPanel();return true;}
+  setToolSetting(key,clean,'payroll');
+  renderDownloadsPanel();
+  return true;
+}
+function _downloadsHtml(){
+  let h='<div class="dl-panel"><div class="wow-head"><h3>Downloads</h3><span class="wow-src">Tick what you need, then download each file or one zip. Nothing here is ever blocked.</span></div>';
+  h+='<div class="dl-labels">File labels: '+entities.map((e,i)=>`<label>${escHtml(e.name||'Entity '+(i+1))} <input type="text" value="${escHtml(_entityFileLabel(e))}" onchange="setEntityFileLabel(${i},this.value)"></label>`).join(' ')+'</div>';
+  h+='<table class="dl-table"><tbody>';
+  DOWNLOADS.forEach(d=>{
+    const st=d.disabled?null:downloadStatus(d.key);
+    const fmts=Object.keys(d.formats).map(f=>`<label class="dl-fmt"><input type="checkbox" ${_dlTick(d.key,f)?'checked':''} ${d.disabled?'disabled':''} onchange="setDownloadTick('${d.key}','${f}',this.checked)"> ${_FMT_LABEL[f]}</label>`).join('');
+    const names=downloadFileNames(d.key);
+    h+=`<tr class="${d.disabled?'dl-disabled':''}"><td class="dl-name"><b>${escHtml(d.label)}</b><div class="dl-desc">${escHtml(d.desc)}</div>${names.length?'<div class="dl-files">'+names.map(escHtml).join('<br>')+'</div>':''}</td><td class="dl-fmts">${d.disabled?'<span class="dl-soon">coming soon</span>':fmts}</td><td class="dl-status">${d.disabled?'':(st.ok?'<span class="dl-ok">✓ Ready</span>':'<span class="dl-warn">⚠ '+st.reasons.map(escHtml).join('<br>⚠ ')+'</span>')}</td></tr>`;
+  });
+  h+='</tbody></table><div class="dl-actions"><button class="btn btn-green" onclick="downloadSelected()">Download selected</button><button class="btn btn-primary" onclick="downloadZip()">Download all (.zip)</button></div></div>';
+  return h;
+}
+function renderDownloadsPanel(){const host=document.getElementById('downloadsHost');if(host)host.innerHTML=_downloadsHtml();}
 function recompute(opts){
   const idx=entities.findIndex(e=>e.id===(opts&&opts.entity));
   if(idx<0)return null;
@@ -2954,7 +3148,12 @@ function fmtH(h){h=((h%24)+24)%24;const ap=h<12?"AM":"PM";const h12=Math.floor(h
 function compactH(h){h=((h%24)+24)%24;const h12=Math.floor(h%12)||12;const m=Math.round((h-Math.floor(h))*60);const suf=h<12?"a":"p";return m===0?h12+suf:h12+":"+String(m).padStart(2,"0")+suf}
 function shortH(h){h=((h%24)+24)%24;if(h===0)return"12a";if(h===12)return"12p";return h<12?Math.floor(h)+"a":Math.floor(h-12)+"p"}
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function _savePdf(doc,name){
+  if(_dlCapture){_dlCapture.push({name,data:doc.output('arraybuffer'),type:'application/pdf'});return;}
+  doc.save(name);
+}
 function downloadBlob(buf,filename){
+  if(_dlCapture){_dlCapture.push({name:filename,data:buf,type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});return;}
   const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=filename;
@@ -3597,9 +3796,11 @@ async function exportEmployee(){
   showToast(`Exported ${fname}`,'ok');
 }
 
-async function exportManager(){
-  readTableState();
-  const ent=entities[activeEntityIdx];
+async function exportManager(entIdx){
+  // FC-00040: the Downloads list exports every entity; only the entity on screen reads its table.
+  const idx=entIdx==null?activeEntityIdx:entIdx;
+  if(idx===activeEntityIdx)readTableState();
+  const ent=entities[idx];
   const ewb=_xlFormulaWorkbook(),ws=ewb.addWorksheet('Manager Report');
   const thinB={style:'thin',color:{argb:'FFB0B0B0'}},medB={style:'medium',color:{argb:'FF666666'}};
   const hdrFill={type:'pattern',pattern:'solid',fgColor:{argb:'FFE8E8E4'}};
@@ -4099,6 +4300,7 @@ function renderPayroll(){
   renderPayrollEntityTabBar();
   renderPayrollEntityContent(activePayrollEntityIdx);
   renderWowPanel();
+  renderDownloadsPanel();
 }
 
 function renderPayrollEntityContent(idx){
@@ -4463,7 +4665,7 @@ async function _fc24ExportScratchPdf(){
     }
   });
   const fname=_exportFilenameBase('combined')+'_Edited_Copy.pdf';
-  doc.save(fname);
+  _savePdf(doc,fname);
   showToast(`Exported ${fname}`,'ok');
 }
 
@@ -5124,7 +5326,7 @@ function getAutoEscalate(){return _prefGet('pv26_auto_escalate')==='1'}
 // Toast notification
 let _toastTimer=null;
 function showToast(msg,kind,ms){
-  if(_simulating)return;
+  if(_simulating||_dlCapture)return;
   const t=document.getElementById('toast');if(!t)return;
   const icon=kind==='err'?'✕':'✓';
   t.innerHTML='<span class="icon">'+icon+'</span>'+msg.replace(/</g,'&lt;');
@@ -7170,6 +7372,7 @@ function syncActualsFromReview(){
 
 function _confirmBreaksOrBail(){
   syncActualsFromReview();
+  if(_dlCapture&&_dlCapture.breaksOk)return true; // FC-00040: asked once for the whole download
   // FC-00027: an entity with actuals but no schedule still deducts its break, so it needs
   // the same confirmation prompt.
   const unset=entities.filter(e=>(e.employees.length>0||(e.actualDays&&e.actualDays.length>0))&&!e.breakMinutesSet);
@@ -7700,7 +7903,7 @@ function _toastExportWithWeekNote(fname){
 async function _exportExcel(kind){
   if(!_confirmBreaksOrBail())return;
   const data=_collectExportData();
-  if(data.length===0){alert('No data to export.');return;}
+  if(data.length===0){if(!_dlCapture)alert('No data to export.');return;}
 
   const ewb=_xlFormulaWorkbook();
   const ws=ewb.addWorksheet('Report');
@@ -7855,7 +8058,7 @@ async function _exportPdf(kind){
   if(!window.jspdf||!window.jspdf.jsPDF){alert('PDF library failed to load. Please reload the page and try again.');return;}
   const {jsPDF}=window.jspdf;
   const data=_collectExportData();
-  if(data.length===0){alert('No data to export.');return;}
+  if(data.length===0){if(!_dlCapture)alert('No data to export.');return;}
 
   // FC-00015: the payroll reports (combined/cashOnly/depositOnly) get the same per-entity
   // color palette baked into the Excel exports (FC-00012/FC-00014), resolved the same way
@@ -7992,7 +8195,7 @@ async function _exportPdf(kind){
   }
 
   const pdfName=_exportFilenameBase(kind)+'.pdf';
-  doc.save(pdfName);
+  _savePdf(doc,pdfName);
   _toastExportWithWeekNote(pdfName);
 }
 
@@ -8176,7 +8379,7 @@ async function exportActualsIntakePdf(){
   });
 
   const fname='Actuals_Intake_'+new Date().toISOString().slice(0,10)+'.pdf';
-  doc.save(fname);
+  _savePdf(doc,fname);
   showToast(`Exported ${fname} — ${all.length} rows`,'ok');
 }
 

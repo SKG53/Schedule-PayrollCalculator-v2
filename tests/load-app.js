@@ -225,6 +225,7 @@ function loadApp() {
       text: noop,
       addPage: noop,
       save: noop,
+      output: () => new ArrayBuffer(8), // FC-00040: Downloads capture PDFs as bytes
       autoTable(tableOpts) {
         // Simulate autoTable's own didParseCell invocation: for every head + body cell it
         // calls the hook with a `data` object shaped like { section, row, column, cell }
@@ -539,6 +540,15 @@ function loadApp() {
       pendingSettings,
       skipPendingSettings,
       onEntityNameChange,
+      DOWNLOADS,
+      downloadFileNames,
+      downloadStatus,
+      setDownloadTick,
+      buildSelectedDownloads,
+      downloadSelected,
+      downloadZip,
+      setEntityFileLabel,
+      renderDownloadsPanel,
       getActiveEntityIdx: () => activeEntityIdx,
       getStaged: () => _staged,
       getCurrentTabName: () => currentTab,
