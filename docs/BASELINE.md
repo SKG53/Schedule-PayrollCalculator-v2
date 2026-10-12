@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00031 (2026-10-07).
+Feature Card since — last updated FC-00039 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -54,6 +54,12 @@ commit.
   stores only the `false` entries — absence means active, so the default is true
   everywhere. `rosterAliases` holds arrays of observed spellings, stored with the
   case typed and compared lower/trimmed.
+- **Change log and checkpoints (FC-00039):** `session.log` records every change made
+  through the dispatcher plus review-row edits, approvals, employee assignment and row
+  add/delete; the History panel (header) lists it with a Revert per line. Before each big
+  action a checkpoint copies the whole session in memory (image files referenced, not
+  copied); the last 10 are kept and the header shows "Undo <action>". Neither is ever
+  written to browser storage.
 - **Computed payroll:** never stored — recomputed on every render by
   `computePayrollForEntity(idx)`.
 - **Persistence — the tool is NOT fully stateless. Browser storage IS used:**
@@ -90,7 +96,11 @@ commit.
 Three top-level tabs (leaving Schedules is blocked until every entity with employees
 has a name):
 
-1. **Schedules** — per-entity sub-tabs (+ Entity to add, Remove button). Upload
+Header: **Undo <last big action>** (FC-00039), **History** (every change with Revert),
+Settings.
+
+1. **Schedules** — per-entity sub-tabs (+ Entity to add, Remove button, which asks first
+   and is undoable). Upload
    .xlsx schedule or start blank; edit shifts inline (`6:45AM - 2:15PM` / `OFF`,
    overnight supported); set new week start date (headers recalc); Employee/Manager
    view toggle (manager adds per-day hours rows); info chips (weekly hours per

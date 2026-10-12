@@ -230,6 +230,21 @@ table.sched tr.orphan-row-quiet td.name-cell::before{content:none}
 .overlay-panel select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,0.12)}
 .overlay-panel details{margin-bottom:8px}
 .overlay-panel details summary{padding:4px 0}
+/* FC-00039: undo button + History panel */
+.undo-btn{border-color:var(--amber);color:#92400E;background:#FFFBEB}
+.undo-btn[disabled]{opacity:0.5;cursor:default;transform:none}
+.overlay-panel.history-panel{max-width:1100px;overflow-x:hidden}
+.history-panel h3{font-size:13px;font-weight:700;margin:16px 0 6px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text2)}
+.history-table{width:100%;border-collapse:collapse;font-size:12px}
+.history-table th{text-align:left;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border);padding:5px 6px;white-space:nowrap}
+.history-table td{border-bottom:1px solid var(--grid-line);padding:5px 6px;vertical-align:top;overflow-wrap:anywhere}
+.history-table td.chg{max-width:300px}
+.history-table td.mono{font-family:'IBM Plex Mono',monospace;font-size:11px;white-space:nowrap}
+.history-table tr.reverted td{color:var(--text3);text-decoration:line-through}
+.history-table tr.reverted td.act{text-decoration:none}
+.history-empty{font-size:13px;color:var(--text3);padding:8px 0}
+.history-table .mini-btn{padding:3px 8px;font-size:11px;border-radius:4px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-family:'Outfit',sans-serif}
+.history-table .mini-btn[disabled]{opacity:0.5;cursor:default}
 .overlay-panel input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,0.12)}
 .overlay-panel .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 .overlay-panel .hint{font-size:11px;color:var(--text3);margin-top:-10px;margin-bottom:14px;line-height:1.5}
@@ -496,6 +511,15 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
   <img id="imgModalImg" src="" alt="Timecard full size">
 </div>
 
+<!-- ===== HISTORY OVERLAY (FC-00039) ===== -->
+<div id="historyOverlay" class="overlay" style="display:none" onclick="if(event.target===this)closeHistory()">
+  <div class="overlay-panel history-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>History</h2><button class="btn" onclick="closeHistory()">Close</button></div>
+    <p class="sub">Big actions can be undone as a whole. Every single change below can be reverted on its own; a revert is added as its own line and nothing after it is removed.</p>
+    <div id="historyBody"></div>
+  </div>
+</div>
+
 <!-- ===== SETTINGS OVERLAY ===== -->
 <div id="settingsOverlay" class="overlay" style="display:none">
   <div class="overlay-panel">
@@ -551,6 +575,8 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
     <h1>Schedule Planning &amp; Payroll Calculation</h1>
     <div class="header-actions">
       <span id="ocrStatus" class="ocr-status"></span>
+      <span id="undoBar"></span>
+      <button class="btn" onclick="openHistory()" title="Every change made this session, with Revert per line">History</button>
       <button class="btn" onclick="openSettings()">Settings</button>
     </div>
   </div>
@@ -1356,7 +1382,9 @@ function computePayBreakdown(row,entId){
 
 function _nextLogEntry(change){
   const seq=++session.seq;
-  return Object.assign({id:'l'+seq,seq,t:Date.now()-session.startedAt,reverted:false},change);
+  const e=Object.assign({id:'l'+seq,seq,t:Date.now()-session.startedAt,reverted:false},change);
+  if(_cpTag)e.cp=_cpTag; // FC-00039: written by a checkpointed action itself
+  return e;
 }
 function _applyChange(entry,invert){
   const target=entry.target||{};
@@ -1364,6 +1392,7 @@ function _applyChange(entry,invert){
   const empName=(entry.meta&&entry.meta.empName)||(_recordForId(target.id)||{}).canonical_name||'';
   const key=target.id||wKey(entId,empName);
   const value=invert?entry.from:entry.to;
+  if(_REVIEW_LOG_TYPES.has(entry.type)){_applyReviewChange(entry,invert);return;}
   _withSessionMutation(()=>{
     if(entry.type==='wage'){
       if(value==null||value===''){delete wageRates[key];wageBlank[key]=true;_applyRecordMirror(entId,empName,'rate',null);}
@@ -1445,6 +1474,7 @@ function dispatch(change){
   const entry=_nextLogEntry(change);
   reducer(entry,false);
   session.log.push(entry);
+  _refreshHistoryIfOpen();
   return entry;
 }
 function revert(id){
@@ -1452,10 +1482,370 @@ function revert(id){
   if(!original)return null;
   _applyChange(original,true);
   original.reverted=true;
-  const entry=_nextLogEntry({type:'revert',screen:'log',target:original.target,from:original.to,to:original.from,originalId:original.id});
+  const change={type:'revert',screen:'log',target:original.target,from:original.to,to:original.from,originalId:original.id};
+  if(original.meta)change.meta=_cloneState(original.meta);
+  const entry=_nextLogEntry(change);
   session.log.push(entry);
+  _refreshHistoryIfOpen();
   return entry;
 }
+
+// ================================================================
+// FC-00039 — checkpoints (one-click undo of big actions) and the History panel
+// ================================================================
+// A checkpoint is a full in-memory copy of session state taken right before a big action
+// (schedule load, Run OCR, image or row re-read, settings/actuals import, clear, remove
+// entity…). Image files are referenced, never copied: they stay attached to their jobs.
+// The last CHECKPOINT_LIMIT live in memory only and are never written to a snapshot.
+// Restores happen IN PLACE so every global that aliases a session object (entities,
+// wageRates, actualDays…) stays the same object.
+const _STORE_NAMES=['wageRates','payMethod','splitAmounts','wageBlank','breakOverrides','payrollSortMode','entityPalettes','rosterActive','rosterAliases','flatWages'];
+const CHECKPOINT_LIMIT=10;
+let _checkpoints=[];
+let _cpSeq=0;
+// Id of the checkpoint whose synchronous action is running. Log lines written by the action
+// itself carry it, so Undo never counts the action's own lines as "later changes".
+let _cpTag=null;
+function _isBlobLike(v){return typeof Blob!=='undefined'&&v instanceof Blob}
+function _cloneState(v){
+  if(v===null||typeof v!=='object')return v;
+  if(_isBlobLike(v))return v; // image files: same object, never copied
+  if(v instanceof Date)return new Date(v.getTime());
+  if(Array.isArray(v))return v.map(_cloneState);
+  const o={};
+  for(const k of Object.keys(v)){
+    const x=v[k];
+    if(typeof x==='function')continue;
+    // Object URLs can be revoked (Clear); a restored job rebuilds its own on first render.
+    o[k]=k==='_thumbUrl'?null:_cloneState(x);
+  }
+  return o;
+}
+function _captureState(){
+  const st={
+    entities:_cloneState(entities),
+    roster:_cloneState(session.roster),
+    log:_cloneState(session.log),
+    seq:session.seq,
+    actualDays:_cloneState(actualDays),
+    roundingFactors:_cloneState(session.roundingFactors),
+    flatWagesDisplayNames:_cloneState(session.flatWagesDisplayNames),
+    empIdSeq:_cloneState(session._empIdSeq||null),
+    fileIdMax:_cloneState(session._fileIdMax||null),
+    stores:{},
+    ui:{nextEntityId,activeEntityIdx,activePayrollEntityIdx,activePayrollSubTab:_cloneState(activePayrollSubTab),currentTab,currentView,flagView,activeEmp}
+  };
+  _STORE_NAMES.forEach(n=>{st.stores[n]=_cloneState(session[n]);});
+  return st;
+}
+// Data-only fingerprint of a captured state: screen position, render-only fields and the change
+// log excluded (log lines are counted on their own, and some are re-sent without changing data).
+const _SIG_SKIP_KEYS=new Set(['_thumbUrl','_rerunning','_dateCommitted','_editStart']);
+function _stateSig(st){
+  return JSON.stringify(Object.assign({},st,{ui:undefined,log:undefined,seq:undefined}),(k,v)=>{
+    if(_SIG_SKIP_KEYS.has(k))return undefined;
+    if(_isBlobLike(v))return'[file]';
+    return v;
+  });
+}
+function _refill(obj,src){
+  Object.keys(obj).forEach(k=>{delete obj[k];});
+  Object.keys(src||{}).forEach(k=>{obj[k]=src[k];});
+}
+function _restoreState(st,opts){
+  st=_cloneState(st);
+  const withUi=!!(opts&&opts.ui);
+  entities.length=0;
+  st.entities.forEach(e=>entities.push(e));
+  _refill(session.roster.byId,st.roster.byId);
+  _refill(session.roster.keyToId,st.roster.keyToId);
+  session.log.length=0;
+  st.log.forEach(e=>session.log.push(e));
+  session.seq=st.seq;
+  // Legacy combined-mode code reassigns the actualDays global; restore into the session's
+  // own array and point the global back at it.
+  const ad=session.actualDays;
+  ad.length=0;
+  (st.actualDays||[]).forEach(d=>ad.push(d));
+  actualDays=ad;
+  _refill(session.roundingFactors,st.roundingFactors);
+  _refill(session.flatWagesDisplayNames,st.flatWagesDisplayNames);
+  if(st.empIdSeq)session._empIdSeq=st.empIdSeq;else delete session._empIdSeq;
+  if(st.fileIdMax)session._fileIdMax=st.fileIdMax;else delete session._fileIdMax;
+  _withSessionMutation(()=>{_STORE_NAMES.forEach(n=>_refill(session[n],st.stores[n]));});
+  const u=st.ui||{};
+  nextEntityId=u.nextEntityId!=null?u.nextEntityId:nextEntityId;
+  activeEntityIdx=Math.max(0,Math.min(u.activeEntityIdx!=null?u.activeEntityIdx:activeEntityIdx,entities.length-1));
+  activePayrollEntityIdx=Math.max(0,Math.min(u.activePayrollEntityIdx!=null?u.activePayrollEntityIdx:activePayrollEntityIdx,entities.length-1));
+  _refill(activePayrollSubTab,u.activePayrollSubTab);
+  if(withUi){
+    currentTab=u.currentTab||currentTab;currentView=u.currentView||currentView;
+    flagView=u.flagView||flagView;activeEmp=u.activeEmp!==undefined?u.activeEmp:activeEmp;
+  }else{
+    activeEmp=null;
+  }
+}
+// Redraws every screen from state. Never reads the DOM back into state (that would undo the restore).
+function _rerenderAll(){
+  if(activeEntityIdx>=entities.length)activeEntityIdx=entities.length-1;
+  renderEntityTabBar();syncEntityHeader();renderScheduleContent();
+  ['schedule','intake','payroll'].forEach(t=>{
+    const b=document.getElementById('tab-'+t);if(b&&b.classList)b.classList.toggle('active',currentTab===t);
+    const p=document.getElementById(t+'Tab');if(p)p.style.display=currentTab===t?'block':'none';
+  });
+  if(currentTab==='intake')renderIntake();
+  if(currentTab==='payroll'){syncActualsFromReview();renderPayroll();}
+  renderUndoBar();
+  _refreshHistoryIfOpen();
+}
+function _entLabel(idx){const e=entities[idx];return e?(e.name||('Entity '+(idx+1))):''}
+function _checkpoint(label,meta){
+  const state=_captureState();
+  const cp={id:'cp'+(++_cpSeq),label,at:Date.now(),state,beforeSig:_stateSig(state),beforeSeq:session.seq,afterSeq:null,afterSig:null,meta:meta||{}};
+  _checkpoints.push(cp);
+  if(_checkpoints.length>CHECKPOINT_LIMIT)_checkpoints.splice(0,_checkpoints.length-CHECKPOINT_LIMIT);
+  renderUndoBar();
+  return cp;
+}
+function _checkpointDone(cp){
+  cp.afterSig=_stateSig(_captureState());
+  cp.afterSeq=session.seq;
+  // Nothing changed (declined, failed, no match): there is nothing to undo.
+  if(cp.afterSig===cp.beforeSig){const i=_checkpoints.indexOf(cp);if(i>=0)_checkpoints.splice(i,1);}
+  renderUndoBar();
+  _refreshHistoryIfOpen();
+}
+// Runs fn (sync or async) behind a checkpoint labelled `label`.
+function _withCheckpoint(label,fn,meta){
+  const cp=_checkpoint(label,meta);
+  const prevTag=_cpTag;
+  let out;
+  _cpTag=cp.id;
+  try{out=fn();}
+  catch(err){_cpTag=prevTag;_checkpointDone(cp);throw err;}
+  _cpTag=prevTag;
+  if(out&&typeof out.then==='function'){
+    return out.then(v=>{_checkpointDone(cp);return v;},err=>{_checkpointDone(cp);throw err;});
+  }
+  _checkpointDone(cp);
+  return out;
+}
+function getCheckpoints(){return _checkpoints.map(c=>({id:c.id,label:c.label,at:c.at,running:c.afterSeq==null}))}
+// What an undo of `cp` would also throw away.
+function _undoLoss(cp){
+  const lines=session.log.filter(e=>e.seq>cp.beforeSeq&&e.cp!==cp.id&&e.type!=='rosterAdd');
+  const kinds={};
+  lines.forEach(e=>{const k=_historyKind(e);kinds[k]=(kinds[k]||0)+1;});
+  const later=_checkpoints.slice(_checkpoints.indexOf(cp)+1).map(c=>c.label);
+  const untracked=!lines.length&&!later.length&&cp.afterSig!=null&&_stateSig(_captureState())!==cp.afterSig;
+  return{count:lines.length,kinds,later,untracked};
+}
+function undoCheckpoint(cpId){
+  const i=cpId?_checkpoints.findIndex(c=>c.id===cpId):_checkpoints.length-1;
+  const cp=_checkpoints[i];
+  if(!cp){showToast('Nothing to undo','err');return false;}
+  if(_checkpoints.some(c=>c.afterSeq==null)){showToast('An action is still running. Wait for it to finish, then undo.','err');return false;}
+  const loss=_undoLoss(cp);
+  if(loss.count||loss.later.length||loss.untracked){
+    const parts=[];
+    if(loss.later.length)parts.push('Later big action'+(loss.later.length===1?'':'s')+': '+loss.later.join(', '));
+    if(loss.count)parts.push(loss.count+' later change'+(loss.count===1?'':'s')+': '+Object.entries(loss.kinds).map(([k,n])=>n+' × '+k).join(', '));
+    if(loss.untracked)parts.push('Other edits made since (schedule cells, entity names)');
+    if(!confirm('Undo "'+cp.label+'"?\n\nThis puts everything back to just before it, so these are lost too:\n• '+parts.join('\n• ')+'\n\nContinue?'))return false;
+  }
+  _restoreState(cp.state,{ui:false});
+  _checkpoints.splice(i);
+  _rerenderAll();
+  showToast('Undone: '+cp.label,'ok');
+  return true;
+}
+function renderUndoBar(){
+  const el=document.getElementById('undoBar');if(!el)return;
+  const cp=_checkpoints[_checkpoints.length-1];
+  if(!cp){el.innerHTML='';return;}
+  const running=cp.afterSeq==null;
+  el.innerHTML=`<button class="btn undo-btn" ${running?'disabled':''} onclick="undoCheckpoint()" title="${running?'Running…':'Put everything back to just before this action'}">↶ Undo ${escHtml(cp.label)}</button>`;
+}
+
+// ---- Logging for review rows (FC-00039 DoD 7) ----
+// These changes are made by the review screen itself; _record only writes the log line.
+// _applyChange knows how to invert each of them for a per-line Revert.
+function _record(change){
+  const entry=_nextLogEntry(change);
+  session.log.push(entry);
+  _refreshHistoryIfOpen();
+  return entry;
+}
+function _noteEditStart(row,field){
+  if(!row._editStart)row._editStart={};
+  if(!Object.prototype.hasOwnProperty.call(row._editStart,field))row._editStart[field]=row[field]==null?'':row[field];
+}
+function _takeEditStart(row,field){
+  const s=row._editStart;
+  if(s&&Object.prototype.hasOwnProperty.call(s,field)){
+    const v=s[field];delete s[field];
+    if(!Object.keys(s).length)delete row._editStart;
+    return v;
+  }
+  return row[field]==null?'':row[field];
+}
+// Sets one review field the same way an edit in the table does (edit state, flags, approval).
+function _setReviewFieldRaw(h,field,val){
+  h.row[field]=val;
+  if(REVIEWER_EDIT_FIELDS.includes(field))_applyReviewerEditState(h.row);
+  recomputeRowFlags(h.row,h.ent);
+  if(h.row.needsReview)h.row.approved=false;
+}
+function _rowMeta(row,ent,extra){return Object.assign({empName:row.empName||'',date:row.date||'',entityName:ent.name||''},extra||{})}
+function _recordBulkApproval(ent,changed,to,label){
+  if(!changed.length)return;
+  const from={},toMap={};
+  changed.forEach(id=>{from[id]=!to;toMap[id]=to;});
+  _record({type:'reviewApproveBulk',screen:'intake',target:{kind:'reviewRows',entity:ent.id,field:'approved'},from,to:toMap,meta:{count:changed.length,empName:label||'',entityName:ent.name||''}});
+}
+const _REVIEW_LOG_TYPES=new Set(['reviewEdit','reviewApprove','reviewApproveBulk','reviewRowAdd','reviewRowDelete','reviewIgnore']);
+function _applyReviewChange(entry,invert){
+  const t=entry.target||{};
+  const value=invert?entry.from:entry.to;
+  const ent=entities.find(e=>e.id===t.entity);
+  if(entry.type==='reviewEdit'){
+    const h=findReviewRow(t.id);if(h)_setReviewFieldRaw(h,t.field,value);
+  }else if(entry.type==='reviewApprove'){
+    const h=findReviewRow(t.id);if(h)h.row.approved=!!value;
+  }else if(entry.type==='reviewApproveBulk'){
+    Object.keys(value||{}).forEach(id=>{const h=findReviewRow(id);if(h)h.row.approved=!!value[id];});
+  }else if(entry.type==='reviewRowAdd'||entry.type==='reviewRowDelete'){
+    if(!ent)return;
+    ensureIntakeState(ent);
+    const rows=ent.intake.reviewRows;
+    const at=rows.findIndex(r=>r.id===t.id);
+    if(value==null){if(at>=0)rows.splice(at,1);}
+    else if(at<0){const i=Math.max(0,Math.min((entry.meta&&entry.meta.index)||0,rows.length));rows.splice(i,0,_cloneState(value));ent.intake.ocrDone=true;}
+  }else if(entry.type==='reviewIgnore'){
+    if(!ent)return;
+    ensureIntakeState(ent);
+    if(!ent.intake.ignoredEmployees)ent.intake.ignoredEmployees={};
+    const k=entry.meta&&entry.meta.empKey;
+    if(value)ent.intake.ignoredEmployees[k]=true;else delete ent.intake.ignoredEmployees[k];
+  }
+}
+// Can this line still be reverted? (Its row or entity may be gone since.)
+const _NON_REVERTABLE=new Set(['revert','rosterAdd']);
+function canRevertEntry(e){
+  if(!e||e.reverted||_NON_REVERTABLE.has(e.type))return false;
+  if(!_REVIEW_LOG_TYPES.has(e.type))return !!_reducers[e.type];
+  const t=e.target||{};
+  if(e.type==='reviewEdit'||e.type==='reviewApprove')return !!findReviewRow(t.id);
+  if(e.type==='reviewApproveBulk')return Object.keys(e.from||{}).some(id=>findReviewRow(id));
+  const ent=entities.find(x=>x.id===t.entity);if(!ent)return false;
+  if(e.type==='reviewRowAdd')return !!findReviewRow(t.id);
+  if(e.type==='reviewRowDelete')return !findReviewRow(t.id);
+  return true;
+}
+function revertFromHistory(id){
+  const e=session.log.find(x=>x.id===id);
+  if(!canRevertEntry(e)){showToast('This line can no longer be reverted (its row or entity is gone, or it was already reverted).','err');return null;}
+  const r=revert(id);
+  _rerenderAll();
+  if(r)showToast('Reverted: '+_historyKind(e)+(e.meta&&e.meta.empName?' · '+e.meta.empName:''),'ok');
+  return r;
+}
+
+// ---- History panel ----
+let _historyOpen=false;
+const _HISTORY_KIND={wage:'Wage',wageBlank:'Wage',payMethod:'Pay method',splitDeposit:'Deposit amount',flatWage:'Flat amount',
+  breakOverride:'Break',entityBreak:'Entity break',sortMode:'Sort order',entityPaletteSet:'Palette',rosterAdd:'Added to roster',
+  rosterRename:'Name',rosterAliasAdd:'Alias added',rosterAliasRemove:'Alias removed',rosterActiveSet:'Active',rosterFieldSet:'Roster field',
+  reviewEdit:'Punch edit',reviewApprove:'Approval',reviewApproveBulk:'Approval (bulk)',reviewRowAdd:'Row added',reviewRowDelete:'Row deleted',
+  reviewIgnore:'Ignore time cards',revert:'Revert'};
+const _REVIEW_FIELD_LABEL={date:'Date',empName:'Employee',clockIn1:'In 1',clockOut1:'Out 1',clockIn2:'In 2',clockOut2:'Out 2',clockIn3:'In 3',clockOut3:'Out 3'};
+function _historyKind(e){
+  if(e.type==='reviewEdit'&&e.target&&e.target.field==='empName')return'Employee assignment';
+  return _HISTORY_KIND[e.type]||e.type;
+}
+function _historyField(e){
+  const t=e.target||{};
+  if(e.type==='reviewEdit')return(_REVIEW_FIELD_LABEL[t.field]||t.field)+(e.meta&&e.meta.date&&t.field!=='date'?' · '+e.meta.date:'');
+  if(e.type==='reviewApprove'||e.type==='reviewRowAdd'||e.type==='reviewRowDelete')return(e.meta&&e.meta.date)||'';
+  if(e.type==='reviewApproveBulk')return((e.meta&&e.meta.count)||0)+' row'+((e.meta&&e.meta.count)===1?'':'s');
+  if(e.type==='breakOverride')return DAY_SHORT[t.day]||'';
+  if(e.type==='rosterFieldSet')return t.field||'';
+  if(e.type==='revert'){const o=session.log.find(x=>x.id===e.originalId);return o?('#'+o.seq+' '+_historyKind(o)):'';}
+  return'';
+}
+function _historyVal(e,v){
+  if(v===undefined||v===null||v==='')return'(blank)';
+  if(typeof v==='boolean')return v?'Yes':'No';
+  if(Array.isArray(v))return v.length?v.join(', '):'(none)';
+  if(typeof v==='object'){
+    if(e.type==='splitDeposit'||(e.type==='revert'&&'deposit'in v))return'$'+(+v.deposit||0).toFixed(2)+' deposit';
+    if(e.type==='reviewApproveBulk'){const vals=Object.values(v);return vals.length&&vals[0]?'Approved':'Not approved';}
+    if(e.type==='reviewRowAdd'||e.type==='reviewRowDelete')return'row '+(v.empName||'(no name)')+' '+(v.date||'');
+    if(e.type==='rosterAdd')return v.id||'(new)';
+    return JSON.stringify(v);
+  }
+  const f=e.target&&e.target.field;
+  if(e.type==='reviewEdit'&&/^clock/.test(f||''))return to12h(String(v));
+  if(e.type==='reviewApprove')return v?'Approved':'Not approved';
+  if(['wage','flatWage'].includes(e.type)&&!isNaN(parseFloat(v)))return'$'+parseFloat(v).toFixed(2);
+  return String(v);
+}
+function _historyEntityName(e){
+  const t=e.target||{};
+  const ent=entities.find(x=>x.id===t.entity);
+  if(ent)return ent.name||'';
+  if(e.meta&&e.meta.entityName)return e.meta.entityName;
+  const rec=t.id?_recordForId(t.id):null;
+  if(rec){const re=entities.find(x=>x.id===rec.entity);if(re)return re.name||'';}
+  return'';
+}
+function _historyEmployee(e){
+  if(e.meta&&e.meta.empName)return e.meta.empName;
+  const t=e.target||{};
+  const rec=t.id?_recordForId(t.id):null;
+  return rec?(rec.canonical_name||''):'';
+}
+function _fmtClock(ms){
+  const d=new Date(ms);
+  let h=d.getHours();const m=String(d.getMinutes()).padStart(2,'0'),s=String(d.getSeconds()).padStart(2,'0');
+  const ap=h>=12?'PM':'AM';h=h%12||12;
+  return h+':'+m+':'+s+' '+ap;
+}
+function historyRows(){
+  // "Added to roster" is re-sent for every name each time the schedule table is read; one line per person is enough.
+  const seenAdd=new Set();
+  const shown=session.log.filter(e=>{if(e.type!=='rosterAdd')return true;const k=(e.target||{}).id;if(seenAdd.has(k))return false;seenAdd.add(k);return true;});
+  return shown.reverse().map(e=>({
+    id:e.id,seq:e.seq,time:_fmtClock(session.startedAt+(e.t||0)),screen:e.screen||'',entity:_historyEntityName(e),
+    employee:_historyEmployee(e),kind:_historyKind(e),field:_historyField(e),
+    from:_historyVal(e,e.from),to:_historyVal(e,e.to),reverted:!!e.reverted,canRevert:canRevertEntry(e)
+  }));
+}
+function _historyHtml(){
+  let html='<h3>Big actions</h3>';
+  if(!_checkpoints.length)html+='<div class="history-empty">No big actions to undo yet. Schedule loads, OCR runs, re-reads, imports, Clear and Remove entity appear here.</div>';
+  else{
+    html+='<table class="history-table"><thead><tr><th>Time</th><th>Action</th><th></th></tr></thead><tbody>';
+    _checkpoints.slice().reverse().forEach(c=>{
+      const running=c.afterSeq==null;
+      html+=`<tr><td class="mono">${_fmtClock(c.at)}</td><td>${escHtml(c.label)}${running?' <span style="color:var(--amber)">(running)</span>':''}</td><td class="act"><button class="mini-btn" ${running?'disabled':''} onclick="undoCheckpoint('${c.id}')" title="Put everything back to just before this action. Anything done after it is listed before anything is undone.">↶ Undo</button></td></tr>`;
+    });
+    html+='</tbody></table>';
+  }
+  html+='<h3>Changes</h3>';
+  const rows=historyRows();
+  if(!rows.length)return html+'<div class="history-empty">No changes yet.</div>';
+  html+='<table class="history-table"><thead><tr><th>#</th><th>Time</th><th>Screen</th><th>Entity</th><th>Employee</th><th>Change</th><th>Detail</th><th>Old → New</th><th></th></tr></thead><tbody>';
+  rows.forEach(r=>{
+    const act=r.reverted?'<span style="color:var(--text3)">reverted</span>':(r.canRevert?`<button class="mini-btn" onclick="revertFromHistory('${r.id}')">Revert</button>`:'');
+    html+=`<tr class="${r.reverted?'reverted':''}"><td class="mono">${r.seq}</td><td class="mono">${escHtml(r.time)}</td><td>${escHtml(r.screen)}</td><td>${escHtml(r.entity)}</td><td>${escHtml(r.employee)}</td><td>${escHtml(r.kind)}</td><td>${escHtml(r.field)}</td><td class="chg">${escHtml(r.from)} → ${escHtml(r.to)}</td><td class="act">${act}</td></tr>`;
+  });
+  return html+'</tbody></table>';
+}
+function renderHistoryPanel(){const b=document.getElementById('historyBody');if(b)b.innerHTML=_historyHtml();}
+function openHistory(){_historyOpen=true;document.getElementById('historyOverlay').style.display='flex';renderHistoryPanel();}
+function closeHistory(){_historyOpen=false;document.getElementById('historyOverlay').style.display='none';}
+function _refreshHistoryIfOpen(){if(_historyOpen)renderHistoryPanel();}
 function recompute(opts){
   const idx=entities.findIndex(e=>e.id===(opts&&opts.entity));
   if(idx<0)return null;
@@ -1615,8 +2005,20 @@ function addEntity(){
   renderScheduleContent();
 }
 
+// FC-00039: confirms with what the entity holds, and is undoable.
 function removeEntity(){
-  if(entities.length<=1)return;
+  if(entities.length<=1)return false;
+  const ent=entities[activeEntityIdx];
+  const name=_entLabel(activeEntityIdx);
+  const emps=(ent.employees||[]).length;
+  const rows=ent.intake&&ent.intake.reviewRows?ent.intake.reviewRows.length:0;
+  const imgs=ent.intake&&ent.intake._ocrJobs?ent.intake._ocrJobs.length:0;
+  const msg='Remove entity "'+name+'"?\n\nIt holds '+emps+' employee'+(emps===1?'':'s')+' on the schedule, '+rows+' punch row'+(rows===1?'':'s')+(imgs?' and '+imgs+' timecard image'+(imgs===1?'':'s'):'')+'.\n\nYou can undo this right after with "Undo".';
+  if(!confirm(msg))return false;
+  _withCheckpoint('Remove entity · '+name,()=>_removeEntityImpl());
+  return true;
+}
+function _removeEntityImpl(){
   entities.splice(activeEntityIdx,1);
   activeEntityIdx=Math.min(activeEntityIdx,entities.length-1);
   activeEmp=null;
@@ -1737,7 +2139,11 @@ function handleFile(file){
   reader.readAsArrayBuffer(file);
 }
 
+// FC-00039: every schedule load (Excel, paste, schedule OCR) is undoable as one step.
 function parseSchedule(rows,idx){
+  return _withCheckpoint('Schedule load · '+(_entLabel(idx)||'entity'),()=>_parseScheduleImpl(rows,idx));
+}
+function _parseScheduleImpl(rows,idx){
   let headerRow=-1,colMap={};
   for(let r=0;r<rows.length;r++){
     const row=rows[r].map(c=>c.toString().trim().toLowerCase());
@@ -1810,6 +2216,9 @@ function startBlank(){
 }
 
 function reloadSchedule(){
+  _withCheckpoint('Clear schedule · '+_entLabel(activeEntityIdx),()=>_reloadScheduleImpl());
+}
+function _reloadScheduleImpl(){
   entities[activeEntityIdx].employees=[];
   entities[activeEntityIdx].dateLabels=['','','','','','',''];
   entities[activeEntityIdx].newDateLabels=['','','','','','',''];
@@ -3877,6 +4286,10 @@ function addIntakeFiles(idx,kind,files){
 }
 
 function clearIntake(idx){
+  const ent=entities[idx];if(!ent||!ent.intake)return;
+  _withCheckpoint('Clear intake · '+_entLabel(idx),()=>_clearIntakeImpl(idx));
+}
+function _clearIntakeImpl(idx){
   const ent=entities[idx];if(!ent.intake)return;
   ent.intake.timecardFiles=[];ent.intake.easyclockFiles=[];ent.intake.mixedFiles=[];
   ent.intake.reviewRows=[];ent.intake.ocrDone=false;ent.intake.lastOcrError='';
@@ -3991,6 +4404,7 @@ function addManualRowEntity(idx){
     confidence:1.0,flags:['Manually added — select employee and fill in all fields'],needsReview:true,approved:false,
     originalName:'(manual)'
   });
+  _record({type:'reviewRowAdd',screen:'intake',target:{kind:'reviewRow',entity:ent.id,id:newId},from:null,to:_cloneState(ent.intake.reviewRows[ent.intake.reviewRows.length-1]),meta:{empName:'',date:iso,entityName:ent.name||'',index:ent.intake.reviewRows.length-1}});
   ent.intake.activeEmpTab='__unrecognized__';
   ent.intake.ocrDone=true;
   renderIntake();
@@ -4025,6 +4439,7 @@ function addManualRow(idx){
     confidence:1.0,flags:['Manually added — fill in all fields'],needsReview:true,approved:false,
     originalName:'(manual)'
   });
+  _record({type:'reviewRowAdd',screen:'intake',target:{kind:'reviewRow',entity:ent.id,id:newId},from:null,to:_cloneState(ent.intake.reviewRows[ent.intake.reviewRows.length-1]),meta:{empName:prefillName,date:iso,entityName:ent.name||'',index:ent.intake.reviewRows.length-1}});
   // Lock the sub-tab focus onto the row we just created so the user sees it immediately
   ent.intake.activeEmpTab=prefillName||'__unrecognized__';
   ent.intake.ocrDone=true;
@@ -4169,7 +4584,11 @@ async function retryOcrJob(idx,jobIdx,maxAttempts){
 // Re-run OCR for a single image from within the review table.
 // Finds the matching job by filename and delegates to retryOcrJob.
 // maxAttempts: 1 (default) for a single attempt, 3 for triple-retry with delay.
-async function rerunOcrForImage(entIdx, imageKey, maxAttempts){
+function rerunOcrForImage(entIdx,imageKey,maxAttempts){
+  const job=_findJobForRow(entIdx,imageKey);
+  return _withCheckpoint('Image re-run · '+((job&&job.name)||'image'),()=>_rerunOcrForImageImpl(entIdx,imageKey,maxAttempts));
+}
+async function _rerunOcrForImageImpl(entIdx, imageKey, maxAttempts){
   maxAttempts=Math.max(1,parseInt(maxAttempts,10)||1);
   const ent=entities[entIdx];if(!ent||!ent.intake)return;
   const jobs=ent.intake._ocrJobs;
@@ -4241,7 +4660,12 @@ function _applyRowReread(row,fresh,kind,model,note,ent){
   row.flags.push('Re-read from image — check and approve');
   row.needsReview=true;
 }
-async function rerunOcrForRow(entIdx,rowId){
+function rerunOcrForRow(entIdx,rowId){
+  const ent=entities[entIdx];
+  const row=ent&&ent.intake?ent.intake.reviewRows.find(r=>r.id===rowId):null;
+  return _withCheckpoint('Row re-read · '+((row&&(row.empName||row.rawOcrName))||'row')+(row&&row.date?' '+row.date:''),()=>_rerunOcrForRowImpl(entIdx,rowId));
+}
+async function _rerunOcrForRowImpl(entIdx,rowId){
   const ent=entities[entIdx];if(!ent||!ent.intake)return;
   const row=ent.intake.reviewRows.find(r=>r.id===rowId);if(!row)return;
   if(row._rerunning){showToast('Already re-reading this row','ok');return;}
@@ -4285,7 +4709,10 @@ async function rerunOcrForRow(entIdx,rowId){
   showToast(`Row re-read · ${row.empName||'row'} ${row.date} — check and approve`,'ok');
 }
 
-async function runOcrForEntity(idx){
+function runOcrForEntity(idx){
+  return _withCheckpoint('Run OCR · '+(_entLabel(idx)||'entity'),()=>_runOcrForEntityImpl(idx));
+}
+async function _runOcrForEntityImpl(idx){
   const ent=entities[idx];ensureIntakeState(ent);
   const apiKey=_prefGet('pv26_api_key');
   if(!apiKey){showToast('No Gemini API key set. Opening Settings…','err');openSettings();return}
@@ -5239,6 +5666,7 @@ function handleTimeInput(el,id,field){
   if(filtered!==el.value)el.value=filtered;
   const h=findReviewRow(id);if(!h)return;
   // Store raw during typing; commit normalizes on blur
+  _noteEditStart(h.row,field);
   h.row[field]=from12h(filtered)||filtered;
   _applyReviewerEditState(h.row);
   scheduleDynamicRecompute();
@@ -5282,6 +5710,7 @@ function findReviewRow(id){
 // Full flag recomputation + render happens on blur/change via updateReviewField.
 function updateReviewFieldLight(id,field,val){
   const h=findReviewRow(id);if(!h)return;
+  _noteEditStart(h.row,field);
   h.row[field]=val;
   if(REVIEWER_EDIT_FIELDS.includes(field))_applyReviewerEditState(h.row);
   // Nudge payroll recompute on next settle (debounced) so Payroll tab stays in sync
@@ -5300,11 +5729,16 @@ function scheduleDynamicRecompute(){
 
 function updateReviewField(id,field,val){
   const h=findReviewRow(id);if(!h)return;
+  const from=_takeEditStart(h.row,field);
   h.row[field]=val;
   if(REVIEWER_EDIT_FIELDS.includes(field))_applyReviewerEditState(h.row);
   recomputeRowFlags(h.row,h.ent);
   // If the row was previously approved and edits invalidate it, un-approve
   if(h.row.needsReview)h.row.approved=false;
+  // FC-00039: punch/date edits and employee assignment are logged for History + Revert.
+  if(String(from==null?'':from)!==String(val==null?'':val)){
+    _record({type:'reviewEdit',screen:'intake',target:{kind:'reviewRow',entity:h.ent.id,id,field},from:from==null?'':from,to:val==null?'':val,meta:_rowMeta(h.row,h.ent,field==='empName'?{empName:val||from||''}:null)});
+  }
   refreshReviewTable(entities.indexOf(h.ent));
   scheduleDynamicRecompute();
 }
@@ -5359,6 +5793,7 @@ function approveReviewRow(id){
     showToast('Cannot approve — this row has a missing clock-in or clock-out. Fix the pair first.','err');
     return;
   }
+  if(!h.row.approved)_record({type:'reviewApprove',screen:'intake',target:{kind:'reviewRow',entity:h.ent.id,id,field:'approved'},from:false,to:true,meta:_rowMeta(h.row,h.ent)});
   h.row.approved=true;
   refreshReviewTable(entities.indexOf(h.ent));
   scheduleDynamicRecompute();
@@ -5368,7 +5803,11 @@ function deleteReviewRow(id){
   for(const ent of entities){
     if(!ent.intake)continue;
     const i=ent.intake.reviewRows.findIndex(x=>x.id===id);
-    if(i>=0){ent.intake.reviewRows.splice(i,1);refreshReviewTable(entities.indexOf(ent));return;}
+    if(i>=0){
+      const row=ent.intake.reviewRows[i];
+      _record({type:'reviewRowDelete',screen:'intake',target:{kind:'reviewRow',entity:ent.id,id},from:_cloneState(row),to:null,meta:_rowMeta(row,ent,{index:i})});
+      ent.intake.reviewRows.splice(i,1);refreshReviewTable(entities.indexOf(ent));return;
+    }
   }
 }
 
@@ -5386,12 +5825,13 @@ function isRowStructurallyValid(r){
 
 function approveAll(idx){
   const ent=entities[idx];if(!ent||!ent.intake)return;
-  let approved=0,skipped=0;
+  let approved=0,skipped=0;const changed=[];
   ent.intake.reviewRows.forEach(r=>{
     if(r.approved)return;
     if(!isRowStructurallyValid(r)){skipped++;return;}
-    r.approved=true;approved++;
+    r.approved=true;approved++;changed.push(r.id);
   });
+  _recordBulkApproval(ent,changed,true,'');
   refreshReviewTable(idx);
   scheduleDynamicRecompute();
   if(skipped>0){
@@ -5404,7 +5844,9 @@ function approveAll(idx){
 // Unapprove all rows for an entity, keeping every edit intact.
 function unapproveAll(idx){
   const ent=entities[idx];if(!ent||!ent.intake)return;
+  const changed=ent.intake.reviewRows.filter(r=>r.approved).map(r=>r.id);
   ent.intake.reviewRows.forEach(r=>{r.approved=false;});
+  _recordBulkApproval(ent,changed,false,'');
   refreshReviewTable(idx);
   scheduleDynamicRecompute();
 }
@@ -5412,13 +5854,14 @@ function unapproveAll(idx){
 // Approve all rows for a specific employee sub-tab.
 function approveAllForEmployee(idx,empKey){
   const ent=entities[idx];if(!ent||!ent.intake)return;
-  let approved=0,skipped=0;
+  let approved=0,skipped=0;const changed=[];
   ent.intake.reviewRows.forEach(r=>{
     if(reviewBucketKey(r,ent)!==empKey)return;
     if(r.approved)return;
     if(!isRowStructurallyValid(r)){skipped++;return;}
-    r.approved=true;approved++;
+    r.approved=true;approved++;changed.push(r.id);
   });
+  _recordBulkApproval(ent,changed,true,empKey==='__unrecognized__'?'Unrecognized':empKey);
   refreshReviewTable(idx);
   scheduleDynamicRecompute();
   const label=empKey==='__unrecognized__'?'Unrecognized':empKey;
@@ -5432,12 +5875,13 @@ function approveAllForEmployee(idx,empKey){
 // Unapprove all rows for a specific employee sub-tab.
 function unapproveAllForEmployee(idx,empKey){
   const ent=entities[idx];if(!ent||!ent.intake)return;
-  let count=0;
+  let count=0;const changed=[];
   ent.intake.reviewRows.forEach(r=>{
     if(reviewBucketKey(r,ent)!==empKey)return;
     if(!r.approved)return;
-    r.approved=false;count++;
+    r.approved=false;count++;changed.push(r.id);
   });
+  _recordBulkApproval(ent,changed,false,empKey==='__unrecognized__'?'Unrecognized':empKey);
   refreshReviewTable(idx);
   scheduleDynamicRecompute();
   const label=empKey==='__unrecognized__'?'Unrecognized':empKey;
@@ -5448,6 +5892,8 @@ function unapproveAllForEmployee(idx,empKey){
 function toggleIgnoreEmployee(idx,empKey){
   const ent=entities[idx];if(!ent||!ent.intake)return;
   if(!ent.intake.ignoredEmployees)ent.intake.ignoredEmployees={};
+  const wasIgnored=!!ent.intake.ignoredEmployees[empKey];
+  _record({type:'reviewIgnore',screen:'intake',target:{kind:'employee',entity:ent.id,field:'ignore'},from:wasIgnored,to:!wasIgnored,meta:{empName:empKey==='__unrecognized__'?'Unrecognized':empKey,empKey,entityName:ent.name||''}});
   if(ent.intake.ignoredEmployees[empKey]){
     delete ent.intake.ignoredEmployees[empKey];
     showToast(`Time cards tracking restored for ${empKey}`,'ok');
@@ -5462,6 +5908,7 @@ function toggleIgnoreEmployee(idx,empKey){
 // Unapprove a single row — keeps its current values so the user can edit then reapprove.
 function unapproveReviewRow(id){
   const h=findReviewRow(id);if(!h)return;
+  if(h.row.approved)_record({type:'reviewApprove',screen:'intake',target:{kind:'reviewRow',entity:h.ent.id,id,field:'approved'},from:true,to:false,meta:_rowMeta(h.row,h.ent)});
   h.row.approved=false;
   refreshReviewTable(entities.indexOf(h.ent));
   scheduleDynamicRecompute();
@@ -6639,7 +7086,7 @@ function importActualsIntakeFile(file){
         showToast('Imported using legacy combined-actuals format. Rows go straight to payroll without review.','ok');
         return;
       }
-      _ingestActualsIntakeRows(data.slice(headerRow+1),colMap);
+      _withCheckpoint('Actuals import · '+(file.name||'file'),()=>_ingestActualsIntakeRows(data.slice(headerRow+1),colMap));
     }catch(err){alert('Error reading file: '+err.message);}
   };
   reader.readAsArrayBuffer(file);
@@ -6938,7 +7385,7 @@ function importPayrollSettingsFile(file,includeBreaks){
       // includeBreaks=true: file's break columns (if present) will overwrite per-day overrides + entity default break.
       // includeBreaks=false: even if the file HAS break columns, they are intentionally ignored — existing
       // break state stays untouched. This is the safety mechanism the user asked for.
-      _ingestPayrollSettings(data.slice(headerRow+1),colMap,!!includeBreaks);
+      _withCheckpoint('Settings import · '+(file.name||'file'),()=>_ingestPayrollSettings(data.slice(headerRow+1),colMap,!!includeBreaks));
     }catch(err){alert('Error reading file: '+err.message);}
   };
   reader.readAsArrayBuffer(file);
