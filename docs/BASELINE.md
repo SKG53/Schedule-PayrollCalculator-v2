@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00044 (2026-10-12).
+Feature Card since — last updated FC-00045 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -139,6 +139,8 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    missing people, setting changes, hours or pay swings and entity totals (read-only).
    At the bottom, **Downloads** (FC-00040): every export on one list with format ticks,
    file names `<labels>_<MMDDtoMMDD>_…`, a ✓ / ⚠ status, Download selected or one zip.
+   "Names on exports" (FC-00045): As saved / FIRST LAST / FIRST, same for all or per
+   export; printing only.
    Below it, the read-only *Combined export preview* (FC-00013) has a "Make editable
    copy" button (FC-00024): an independent, in-memory scratch table where every cell
    is editable, exportable as-is to .xlsx/.pdf, refreshable from the preview, and

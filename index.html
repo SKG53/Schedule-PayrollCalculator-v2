@@ -246,6 +246,12 @@ table.sched tr.orphan-row-quiet td.name-cell::before{content:none}
 .history-empty{font-size:13px;color:var(--text3);padding:8px 0}
 /* FC-00040: Downloads panel */
 .dl-panel{margin-top:16px;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:13px}
+.dl-names{margin:10px 0 0;font-size:12px;color:var(--text2);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.dl-names label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.dl-names input{width:auto;margin:0}
+.dl-names select,.dl-line-names select{padding:2px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface)}
+.dl-names-note{color:var(--text3);font-size:11px}
+.dl-line-names{margin-top:6px;font-size:11px;color:var(--text2)}
 .dl-labels{margin:10px 0;font-size:12px;color:var(--text2);display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .dl-labels input{width:110px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:12px}
 .dl-table{width:100%;border-collapse:collapse}
@@ -2267,6 +2273,7 @@ function setToolSetting(key,val,screen){
 }
 function _toolSettingLabel(k){
   if(TOOL_SETTING_LABELS[k])return TOOL_SETTING_LABELS[k];
+  if(String(k).startsWith('names:'))return _nameSettingLabel(k);
   if(String(k).startsWith('label:')){const e=entities.find(x=>_aliasNorm(x.name||'')===k.slice(6));return'File label · '+(e?e.name:k.slice(6));}
   return k;
 }
@@ -2274,6 +2281,9 @@ function _toolSettingsRows(){
   const rows=Object.keys(TOOL_SETTING_DEFAULTS).map(k=>[TOOL_SETTING_LABELS[k],getToolSetting(k)]);
   // FC-00040: file labels, one row per entity that has one set.
   Object.keys(session.toolSettings||{}).filter(k=>k.startsWith('label:')).sort().forEach(k=>rows.push([_toolSettingLabel(k),session.toolSettings[k]]));
+  // FC-00045: name display, written as words a person can read and edit.
+  const nk=Object.keys(session.toolSettings||{}).filter(k=>k.startsWith('names:'));
+  ['names:scope','names:all',...NAME_EXPORT_KEYS.map(k=>'names:'+k)].filter(k=>nk.includes(k)).forEach(k=>rows.push([_toolSettingLabel(k),_nameSettingValueText(k,session.toolSettings[k])]));
   return rows;
 }
 // rows: [[label,value],…] from the settings file's Tool Settings sheet. Unknown labels are ignored.
@@ -2284,6 +2294,12 @@ function _ingestToolSettings(rows){
     const lab=String((r&&r[0])||'').trim();
     const fl=lab.match(/^file label\s*·\s*(.+)$/i);
     if(fl){const v=String(r[1]||'').replace(/[^A-Za-z0-9_-]+/g,'');if(v&&setToolSetting('label:'+_aliasNorm(fl[1]),v,'settings'))n++;return;}
+    if(/^names on exports\s*·/i.test(lab)){
+      const nk=['names:scope','names:all',...NAME_EXPORT_KEYS.map(k=>'names:'+k)].find(k=>_nameSettingLabel(k).toLowerCase()===lab.toLowerCase());
+      const v=nk?_nameSettingValueFrom(nk,r[1]):null;
+      if(nk&&v&&setToolSetting(nk,v,'settings'))n++;
+      return;
+    }
     const k=byLabel[lab.toLowerCase()];
     if(!k||r[1]===''||r[1]==null)return;
     if(setToolSetting(k,r[1],'settings'))n++;
@@ -2842,7 +2858,7 @@ function _computeStagePreview(){
   // Tool settings (thresholds).
   const tkeys=[...new Set([...Object.keys(TOOL_SETTING_DEFAULTS),...Object.keys(after.toolSettings||{})])];
   const tdiffs=tkeys.filter(k=>{const a=(after.toolSettings||{})[k],b=(before.toolSettings||{})[k];return a!==undefined&&a!==b;})
-    .map(k=>({field:k,label:_toolSettingLabel(k),from:String(getToolSetting(k)===undefined?'(none)':getToolSetting(k)),to:String(after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.screen!=='settings-import'&&e.target&&e.target.field===k)}));
+    .map(k=>({field:k,label:_toolSettingLabel(k),from:String(getToolSetting(k)===undefined?'(none)':(k.startsWith('names:')?_nameSettingValueText(k,getToolSetting(k)):getToolSetting(k))),to:String(k.startsWith('names:')?_nameSettingValueText(k,after.toolSettings[k]):after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.screen!=='settings-import'&&e.target&&e.target.field===k)}));
   if(tdiffs.length)changes.push({row:null,id:'',entity:'',name:'(tool settings)',diffs:tdiffs});
   // Not in file: session people of the file's entities the file does not mention.
   const fileEnts=new Set(rows.map(r=>r.entityName.toLowerCase().trim()));
@@ -3092,16 +3108,86 @@ function setEntityFileLabel(idx,val){
 }
 function _downloadsHtml(){
   let h='<div class="dl-panel"><div class="wow-head"><h3>Downloads</h3><span class="wow-src">Tick what you need, then download each file or one zip. Nothing here is ever blocked.</span></div>';
+  h+=_nameControlsHtml();
   h+='<div class="dl-labels">File labels: '+entities.map((e,i)=>`<label>${escHtml(e.name||'Entity '+(i+1))} <input type="text" value="${escHtml(_entityFileLabel(e))}" onchange="setEntityFileLabel(${i},this.value)"></label>`).join(' ')+'</div>';
   h+='<table class="dl-table"><tbody>';
   DOWNLOADS.forEach(d=>{
     const st=d.disabled?null:downloadStatus(d.key);
     const fmts=Object.keys(d.formats).map(f=>`<label class="dl-fmt"><input type="checkbox" ${_dlTick(d.key,f)?'checked':''} ${d.disabled?'disabled':''} onchange="setDownloadTick('${d.key}','${f}',this.checked)"> ${_FMT_LABEL[f]}</label>`).join('');
     const names=downloadFileNames(d.key);
-    h+=`<tr class="${d.disabled?'dl-disabled':''}"><td class="dl-name"><b>${escHtml(d.label)}</b><div class="dl-desc">${escHtml(d.desc)}</div>${names.length?'<div class="dl-files">'+names.map(escHtml).join('<br>')+'</div>':''}</td><td class="dl-fmts">${d.disabled?'<span class="dl-soon">coming soon</span>':fmts}</td><td class="dl-status">${d.disabled?'':(st.ok?'<span class="dl-ok">✓ Ready</span>':'<span class="dl-warn">⚠ '+st.reasons.map(escHtml).join('<br>⚠ ')+'</span>')}</td></tr>`;
+    h+=`<tr class="${d.disabled?'dl-disabled':''}"><td class="dl-name"><b>${escHtml(d.label)}</b><div class="dl-desc">${escHtml(d.desc)}</div>${names.length?'<div class="dl-files">'+names.map(escHtml).join('<br>')+'</div>':''}</td><td class="dl-fmts">${d.disabled?'<span class="dl-soon">coming soon</span>':fmts}${_lineNameSelectHtml(d.key)}</td><td class="dl-status">${d.disabled?'':(st.ok?'<span class="dl-ok">✓ Ready</span>':'<span class="dl-warn">⚠ '+st.reasons.map(escHtml).join('<br>⚠ ')+'</span>')}</td></tr>`;
   });
   h+='</tbody></table><div class="dl-actions"><button class="btn btn-green" onclick="downloadSelected()">Download selected</button><button class="btn btn-primary" onclick="downloadZip()">Download all (.zip)</button></div></div>';
   return h;
+}
+// ================================================================
+// FC-00045 — how names print on exports (display only; IDs and saved names never change)
+// ================================================================
+const NAME_MODE_LABEL={saved:'As saved',firstLast:'FIRST LAST',first:'FIRST'};
+const NAME_EXPORT_KEYS=['payroll','cashOnly','depositOnly','timecardData','payrollCalc','full','manager'];
+const _DL_KEY_FOR_KIND={combined:'payroll',cashOnly:'cashOnly',depositOnly:'depositOnly',timecard:'timecardData',payrollCalc:'payrollCalc',full:'full',manager:'manager'};
+function exportNameScope(){return getToolSetting('names:scope')==='per'?'per':'all';}
+function exportNameMode(key){
+  const v=exportNameScope()==='per'?(getToolSetting('names:'+key)||getToolSetting('names:all')):getToolSetting('names:all');
+  return NAME_MODE_LABEL[v]?v:'saved';
+}
+function setExportNameScope(v){setToolSetting('names:scope',v==='per'?'per':'all','payroll');_refreshNameViews();}
+function setExportNameMode(key,v){if(!NAME_MODE_LABEL[v])return;setToolSetting('names:'+(key||'all'),v,'payroll');_refreshNameViews();}
+function _refreshNameViews(){if(_simulating)return;renderDownloadsPanel();if(currentTab==='payroll')renderPayroll();}
+// The saved name under the person's permanent ID (resolution only, never mints an ID).
+function _savedNameFor(entId,empName){
+  const rec=_recordForKey(entId,empName)||_recordForAlias(entId,empName)||_recordForFormerName(entId,empName);
+  return(rec&&rec.canonical_name)||(empName||'');
+}
+function _firstWord(n){return String(n||'').trim().split(/\s+/)[0]||''}
+function _lastInitial(n){const w=String(n||'').trim().split(/\s+/);return w.length>1?w[w.length-1].replace(/[^A-Za-z0-9]/g,'').charAt(0):''}
+function _exportNamesByEntity(){
+  const m=new Map();
+  _collectExportData().forEach(d=>d.rows.forEach(r=>{if(!m.has(d.entityId))m.set(d.entityId,[]);m.get(d.entityId).push(r._empName);}));
+  return m;
+}
+// Returns fmt(entId, empName) for one export. namesByEnt (Map entId -> names) is who prints in
+// that export; FIRST uses it to tell two people with the same first name apart.
+function _makeNameFormatter(key,namesByEnt){
+  const mode=exportNameMode(key);
+  if(mode==='saved')return(entId,name)=>_savedNameFor(entId,name);
+  if(mode==='firstLast')return(entId,name)=>_savedNameFor(entId,name).toUpperCase();
+  let groups=null;
+  const peersOf=entId=>{
+    if(!groups){groups=new Map();(namesByEnt||_exportNamesByEntity()).forEach((names,e)=>groups.set(e,[...new Set(names.map(n=>_savedNameFor(e,n)))]));}
+    return groups.get(entId)||[];
+  };
+  return(entId,name)=>{
+    const sv=_savedNameFor(entId,name),f=_firstWord(sv).toUpperCase();
+    const peers=peersOf(entId).filter(p=>_firstWord(p).toUpperCase()===f);
+    if(peers.length<=1)return f||sv.toUpperCase();
+    const li=_lastInitial(sv).toUpperCase();
+    if(!li||peers.filter(p=>_lastInitial(p).toUpperCase()===li).length>1)return sv.toUpperCase();
+    return f+' '+li+'.';
+  };
+}
+function _nameSettingLabel(k){
+  if(k==='names:scope')return'Names on exports · same or per export';
+  if(k==='names:all')return'Names on exports · all exports';
+  const key=k.slice(6),d=DOWNLOADS.find(x=>x.key===key);
+  return'Names on exports · '+(d?d.label:key);
+}
+function _nameSettingValueText(k,v){if(k==='names:scope')return v==='per'?'Per export':'Same for all';return NAME_MODE_LABEL[v]||v;}
+function _nameSettingValueFrom(k,text){
+  const t=String(text||'').trim().toLowerCase();
+  if(k==='names:scope')return t.startsWith('per')?'per':(t?'all':null);
+  const hit=Object.keys(NAME_MODE_LABEL).find(c=>NAME_MODE_LABEL[c].toLowerCase()===t||c.toLowerCase()===t);
+  return hit||null;
+}
+function _nameControlsHtml(){
+  const scope=exportNameScope(),all=exportNameMode('all');
+  const opts=(sel,on)=>Object.keys(NAME_MODE_LABEL).map(c=>`<option value="${c}" ${c===sel?'selected':''}>${NAME_MODE_LABEL[c]}</option>`).join('');
+  return`<div class="dl-names">Names on exports: <label><input type="radio" name="dlNameScope" ${scope==='all'?'checked':''} onchange="setExportNameScope('all')"> Same for all</label> <select ${scope==='all'?'':'disabled'} onchange="setExportNameMode('all',this.value)">${opts(getToolSetting('names:all')||'saved')}</select> <label><input type="radio" name="dlNameScope" ${scope==='per'?'checked':''} onchange="setExportNameScope('per')"> Per export</label> <span class="dl-names-note">Printing only — IDs and saved names never change. The settings file and reviewed timecards always keep saved names.</span></div>`;
+}
+function _lineNameSelectHtml(key){
+  if(exportNameScope()!=='per'||!NAME_EXPORT_KEYS.includes(key))return'';
+  const v=exportNameMode(key);
+  return`<div class="dl-line-names">Names <select onchange="setExportNameMode('${key}',this.value)">${Object.keys(NAME_MODE_LABEL).map(c=>`<option value="${c}" ${c===v?'selected':''}>${NAME_MODE_LABEL[c]}</option>`).join('')}</select></div>`;
 }
 function renderDownloadsPanel(){const host=document.getElementById('downloadsHost');if(host)host.innerHTML=_downloadsHtml();}
 function recompute(opts){
@@ -3829,8 +3915,9 @@ async function exportManager(entIdx){
   const r2=ws.addRow(['',...ent.newDateLabels,'']);
   r2.eachCell((c,ci)=>{c.font={name:'Arial',size:10,color:{argb:'FF6B6960'}};c.fill=hdrFill;c.alignment={horizontal:'center',vertical:'middle'};c.border={top:{style:'medium',color:{argb:'FF999999'}},bottom:medB,right:{style:(ci===1||ci===9)?'medium':'thin',color:{argb:(ci===1||ci===9)?'FF666666':'FFB0B0B0'}}}});
   const hoursRowNums=[];
+  const _nmf=_makeNameFormatter('manager',new Map([[ent.id,ent.employees.map(e=>e.name)]])); // FC-00045
   ent.employees.forEach(emp=>{
-    const r=ws.addRow([emp.name,...emp.shifts]);
+    const r=ws.addRow([_nmf(ent.id,emp.name),...emp.shifts]);
     r.eachCell((c,ci)=>{c.alignment={horizontal:'center',vertical:'middle'};c.border={bottom:thinB,right:{style:(ci===1||ci===9)?'medium':'thin',color:{argb:(ci===1||ci===9)?'FF666666':'FFB0B0B0'}}};
       if(ci===1)c.font={name:'Arial',bold:true,size:11};else{const v=c.value?c.value.toString().toUpperCase():'';c.font={name:'Arial',size:11,color:{argb:v==='OFF'?'FFCC0000':'FF008000'}}}});
     let t2=0;const hRow=['Hours'];
@@ -4691,6 +4778,7 @@ async function _fc24ExportScratchPdf(){
 
 // Render the all-entity preview table + grand total just above the Export button.
 function renderAllEntityPreview(){
+  const _prevNm=_makeNameFormatter('payroll'); // FC-00045: the preview prints names like the payroll report
   let host=document.getElementById('allEntityPreviewHost');
   if(!host){
     host=document.createElement('div');
@@ -4745,7 +4833,7 @@ function renderAllEntityPreview(){
       const rowCls=r.isOrphan?' class="orphan"':'';
       const entityCell=(i===0)?`<td class="entity-col" rowspan="${spanCount}">${escHtml(entityName)}</td>`:'';
       const diffStr=(actualTotal!=null&&Math.abs(diff)>=0.005)?(diff>0?'+':'')+'$'+diff.toFixed(2):'—';
-      html+=`<tr${rowCls}>${entityCell}<td class="name-col">${escHtml(r.name||'(unnamed)')}${r.isOrphan?' <span style="font-size:10px;color:var(--red)">(orphan)</span>':''}${r.isFlat?' <span style="font-size:10px;color:var(--text3)">(flat)</span>':''}</td><td class="num">${hrs!=null?hrs.toFixed(2):'—'}</td><td class="num">${rate}</td><td class="num">${actualTotal!=null?'$'+actualTotal.toFixed(2):'—'}</td><td>${methodLbl}</td><td class="num">${dep>0?'$'+dep.toFixed(2):'—'}</td><td class="num">${cash>0?'$'+cash.toFixed(2):'—'}</td><td class="num">${finalPay>0?'$'+finalPay.toFixed(2):'—'}</td><td class="num" style="color:var(--text3);font-size:11px">${diffStr}</td></tr>`;
+      html+=`<tr${rowCls}>${entityCell}<td class="name-col">${escHtml((exportNameMode('payroll')==='saved'?r.name:_prevNm(ent.id,r.schedName||r.name))||'(unnamed)')}${r.isOrphan?' <span style="font-size:10px;color:var(--red)">(orphan)</span>':''}${r.isFlat?' <span style="font-size:10px;color:var(--text3)">(flat)</span>':''}</td><td class="num">${hrs!=null?hrs.toFixed(2):'—'}</td><td class="num">${rate}</td><td class="num">${actualTotal!=null?'$'+actualTotal.toFixed(2):'—'}</td><td>${methodLbl}</td><td class="num">${dep>0?'$'+dep.toFixed(2):'—'}</td><td class="num">${cash>0?'$'+cash.toFixed(2):'—'}</td><td class="num">${finalPay>0?'$'+finalPay.toFixed(2):'—'}</td><td class="num" style="color:var(--text3);font-size:11px">${diffStr}</td></tr>`;
     });
     const subDiff=roundDeposit(entFinal-entPay);
     const subDiffStr=Math.abs(subDiff)>=0.005?(subDiff>0?'+':'')+'$'+subDiff.toFixed(2):'—';
@@ -7590,8 +7678,11 @@ function _totalCellText(t,v){
 function _totalFmt(t){return t.hours?(t.blankZero?XL_FMT_HOURS_BLANK0:XL_FMT_HOURS):(t.blankZero?XL_FMT_MONEY_BLANK0:XL_FMT_MONEY)}
 
 // ---- Table spec per kind ----
-function _columnsFor(kind){
+function _columnsFor(kind,nameKey){
   const hasActuals=entities.some(e=>e.actualDays&&e.actualDays.length>0);
+  // FC-00045: names print as chosen for this export (the Full report's sections use its choice).
+  const _nmf=_makeNameFormatter(nameKey||_DL_KEY_FOR_KIND[kind]||'payroll');
+  const _nm=r=>_nmf(r._entityId,r._empName);
   if(kind==='cashOnly'){
     return {
       headers:['Entity','Employee','Method','Hours','Rate','Total','Cash Portion'],
@@ -7599,7 +7690,7 @@ function _columnsFor(kind){
       rowFn:(r)=>{
         const hrs=r.isFlat?'':xlHours(hasActuals?(r.actualHours||0):(r.expectedH||0));
         const rate=r._wageBlank?'':(r.isFlat?'flat':(r.wage>0?xlMoney(r.wage):'—'));
-        return [r._entityName,r._empName+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':'Cash',hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.cash)];
+        return [r._entityName,_nm(r)+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':'Cash',hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.cash)];
       },
       fx:(r,n)=>_fxPayBlock(r,n,{hours:3,rate:4,total:5,cash:6},{hoursDrivePay:hasActuals}),
       totals:[{col:6,val:r=>r._breakdown.cash}],
@@ -7614,7 +7705,7 @@ function _columnsFor(kind){
       rowFn:(r)=>{
         const hrs=r.isFlat?'':xlHours(hasActuals?(r.actualHours||0):(r.expectedH||0));
         const rate=r._wageBlank?'':(r.isFlat?'flat':(r.wage>0?xlMoney(r.wage):'—'));
-        return [r._entityName,r._empName+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':methodLabel(r._breakdown.method),hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.deposit)];
+        return [r._entityName,_nm(r)+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':methodLabel(r._breakdown.method),hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.deposit)];
       },
       fx:(r,n)=>_fxPayBlock(r,n,{hours:3,rate:4,total:5,deposit:6},{hoursDrivePay:hasActuals}),
       totals:[{col:6,val:r=>r._breakdown.deposit}],
@@ -7634,7 +7725,7 @@ function _columnsFor(kind){
         const diffCell=Math.abs(diff)>=0.005?xlMoneySigned(diff):'';
         return [
           r._entityName,
-          r._empName+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),
+          _nm(r)+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),
           methodLbl,
           hrs,
           rate,
@@ -7661,7 +7752,7 @@ function _columnsFor(kind){
       headers:['Entity','Employee','Expected Break','Expected Hrs','Actual Break','Actual Hrs','Diff','Avg In Diff','Avg Out Diff','OT Flag'],
       widths:[90,120,70,70,70,70,60,70,70,80],
       rowFn:(r)=>{
-        if(r.isFlat)return [r._entityName,r._empName+' (flat)','','','','','','','',''];
+        if(r.isFlat)return [r._entityName,_nm(r)+' (flat)','','','','','','','',''];
         const expBreak=xlHours(r.expectedBreakH!=null?r.expectedBreakH:0);
         const actBreak=xlHours(r.actualBreakH!=null?r.actualBreakH:0);
         const expH=xlHours(r.expectedH||0);
@@ -7672,7 +7763,7 @@ function _columnsFor(kind){
         const avgIn=r.avgInDiff!=null?(r.avgInDiff>0?'+':'')+r.avgInDiff.toFixed(0)+'m':'';
         const avgOut=r.avgOutDiff!=null?(r.avgOutDiff>0?'+':'')+r.avgOutDiff.toFixed(0)+'m':'';
         const ot=(r.actualHours||0)>40?'⚠ '+((r.actualHours-40).toFixed(2))+'h over':'';
-        return [r._entityName,r._empName+(r.isOrphan?' (orphan)':''),expBreak,expH,actBreak,actH,diff,avgIn,avgOut,ot];
+        return [r._entityName,_nm(r)+(r.isOrphan?' (orphan)':''),expBreak,expH,actBreak,actH,diff,avgIn,avgOut,ot];
       },
       fx:(r,n)=>r.isFlat?{}:{6:{f:'ROUND(F'+n+'-D'+n+',2)',r:Math.round(((r.actualHours||0)-(r.expectedH||0))*100)/100,fmt:XL_FMT_HOURS}},
       totals:[
@@ -7697,7 +7788,7 @@ function _columnsFor(kind){
         const diffCell=Math.abs(diff)>=0.005?xlMoneySigned(diff):'';
         return [
           r._entityName,
-          r._empName+(r.isOrphan?' (orphan)':''),
+          _nm(r)+(r.isOrphan?' (orphan)':''),
           actBreak,
           actH,
           wageOrFlat,
@@ -7961,7 +8052,7 @@ async function _exportExcel(kind){
 
   let titleMerged=false;
   async function writeSection(sectionKind){
-    const spec=_columnsFor(sectionKind);
+    const spec=_columnsFor(sectionKind,_DL_KEY_FOR_KIND[kind]);
     if(!spec)return;
     // The title is merged once. The Full report writes two sections, and merging the same
     // range twice makes ExcelJS throw ("Cannot merge already merged cells"), which killed
@@ -8114,7 +8205,7 @@ async function _exportPdf(kind){
   let startY=56;
 
   function writeSection(sectionKind){
-    const spec=_columnsFor(sectionKind);
+    const spec=_columnsFor(sectionKind,_DL_KEY_FOR_KIND[kind]);
     if(!spec)return;
 
     if(kind==='full'){
