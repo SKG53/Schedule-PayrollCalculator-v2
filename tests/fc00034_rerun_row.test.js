@@ -1,6 +1,7 @@
 // FC-00034: re-run OCR for one review row (one employee + date) instead of the whole image.
-// The fresh reading replaces that row's times in place, the row returns to an unedited OCR
-// row (reviewer edits can go on top again), is unapproved, and no other row is touched.
+// Since FC-00042 the fresh reading is first shown next to the row; once applied (all boxes
+// set to Re-read here) it replaces that row's times in place, the row returns to an unedited
+// OCR row (reviewer edits can go on top again), is unapproved, and no other row is touched.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp, resetToSingleEntity } = require('./load-app');
@@ -36,6 +37,7 @@ function fakeGemini(api, reply) {
   };
   return prompts;
 }
+const applyAll = (api, r) => { api.rereadChooseAll(r.id, 'reread'); api.applyReread(r.id); };
 const el = (o) => Object.assign({ empName: 'Ann', date: '2026-08-10', clockIn1: '', clockOut1: '', confidence: 0.97, notes: '' }, o);
 
 test('test_row_reread_replaces_only_that_row_in_place', async () => {
@@ -46,12 +48,15 @@ test('test_row_reread_replaces_only_that_row_in_place', async () => {
   api.approveReviewRow(other.id);
   const prompts = fakeGemini(api, [el({ clockIn1: '09:00', clockOut1: '17:00' })]);
   await api.rerunOcrForRow(0, r.id);
+  assert.equal(r.clockOut1, '07:00', 'nothing changes until Apply (FC-00042)');
+  applyAll(api, r);
   assert.equal(ent.intake.reviewRows.length, 3, 'no rows added or removed');
   assert.equal(ent.intake.reviewRows[0], r, 'same row object, same id');
   assert.equal(r.clockOut1, '17:00');
   assert.equal(r.source, 'TC');
   assert.equal(r.approved, false);
-  assert.ok(r.flags.some(f => /Re-read from image/.test(f)));
+  assert.ok(r._rereadRow);
+  assert.ok(!r.flags.some(f => /Re-read waiting/.test(f)));
   assert.deepEqual(r._ocr, { date: '2026-08-10', clockIn1: '09:00', clockOut1: '17:00', clockIn2: '', clockOut2: '', clockIn3: '', clockOut3: '' }, 'new OCR baseline');
   assert.equal(other.approved, true, 'other rows untouched');
   assert.equal(bo.clockIn1, '09:05');
@@ -66,23 +71,31 @@ test('test_manual_edits_after_reread_still_become_manual', async () => {
   const r = ocr(api, ent, { clockIn1: '09:00', clockOut1: '07:00' });
   fakeGemini(api, [el({ clockIn1: '09:00', clockOut1: '16:55' })]);
   await api.rerunOcrForRow(0, r.id);
+  applyAll(api, r);
   api.commitTimeInput({ value: '1700' }, r.id, 'clockOut1');
   assert.equal(r.source, 'MN', 'edit on top of the re-read is a manual entry (FC-00029)');
   assert.equal(r.clockOut1, '17:00');
 });
 
-test('test_reread_of_edited_row_asks_first', async () => {
+// FC-00042 replaced the confirm: an edited row is re-read without asking, and the edit is
+// kept unless the owner picks Re-read for that box.
+test('test_reread_of_edited_row_keeps_edit_by_default', async () => {
   const { api, ent } = setup();
   const r = ocr(api, ent, { clockIn1: '09:00', clockOut1: '17:00' });
   api.commitTimeInput({ value: '1730' }, r.id, 'clockOut1');
+  let asked = 0;
+  api.__sandbox.confirm = () => { asked++; return true; };
   const prompts = fakeGemini(api, [el({ clockIn1: '09:00', clockOut1: '17:10' })]);
-  api.__sandbox.confirm = () => false;
   await api.rerunOcrForRow(0, r.id);
-  assert.equal(r.clockOut1, '17:30', 'declined: reviewer value kept');
+  assert.equal(asked, 0);
+  assert.equal(prompts.length, 1);
+  api.applyReread(r.id); // every box on Current
+  assert.equal(r.clockOut1, '17:30', 'reviewer value kept');
   assert.equal(r.source, 'MN');
-  assert.equal(prompts.length, 0, 'no OCR call when declined');
-  api.__sandbox.confirm = () => true;
+  fakeGemini(api, [el({ clockIn1: '09:00', clockOut1: '17:10' })]);
   await api.rerunOcrForRow(0, r.id);
+  api.setRereadChoice(r.id, 'clockOut1', 'reread');
+  api.applyReread(r.id);
   assert.equal(r.clockOut1, '17:10');
   assert.equal(r.source, 'TC');
   assert.equal(r._reviewerEdited, false);
@@ -105,6 +118,7 @@ test('test_easyclocking_picks_nearest_clock_in_on_same_date', async () => {
   const r = ocr(api, ent, { clockIn1: '13:00', clockOut1: '13:05' }, 'EC');
   fakeGemini(api, [el({ clockIn1: '08:58', clockOut1: '12:01' }), el({ clockIn1: '12:58', clockOut1: '17:03' }), el({ date: '2026-08-11', clockIn1: '13:00', clockOut1: '18:00' })]);
   await api.rerunOcrForRow(0, r.id);
+  applyAll(api, r);
   assert.equal(r.clockIn1, '12:58');
   assert.equal(r.clockOut1, '17:03');
   assert.equal(r.source, 'EC');

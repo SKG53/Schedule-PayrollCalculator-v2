@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00041 (2026-10-12).
+Feature Card since — last updated FC-00042 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -209,11 +209,14 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
   pair's adjusted clock-out is advanced by 24 h so span math stays correct
   (parseActuals 1487–1499, syncActualsFromReview mkPair 3774–3782).
 - **MN vs TC/EC (same employee + date) — FC-00029:** `syncActualsFromReview` merges
-  all approved rows for the same employee+date, then drops every TC/EC pair that
-  overlaps an approved MN pair (row gets `_superseded`, badge "⤳ replaced by manual
-  entry"). Non-overlapping pairs from every source still add. Editing any time/date on
-  an OCR row sets `source='MN'` (`_reviewerEdited`, badge "✎ edited (was TC)"); setting
-  every value back to the OCR snapshot (`_ocr`) restores the original source. On OCR
+  all approved rows for the same employee+date, then drops every OCR pair that
+  overlaps a manual pair (row gets `_superseded`, badge "⤳ replaced by manual
+  entry"). Non-overlapping pairs from every source still add. **Per box (FC-00042):**
+  each date/time box keeps its own OCR value in `_ocr[box]`; a box is edited when its
+  value differs (blue box, tooltip "Edited — OCR read …"). Any edited box makes the row
+  `source='MN'` (badge "✎ edited (was TC)"); a pair is manual when its In or Out box is
+  edited, and a hand-typed row is manual throughout. Setting a box back to its OCR value
+  clears that box only. On OCR
   re-run (whole batch or one image) MN rows — including reviewer-edited ones — are kept.
 - **Rounding:** pay per row = 2 dp. Cash = `Math.round` to whole dollars.
   Deposit = 2 dp. `roundingFactors` is legacy no-op. Split ("Deposit + Cash",
@@ -429,10 +432,14 @@ pre-export prompt is the unconfirmed-break `confirm()`, which the user answers.
     carry `imageJobId`; thumbnails and re-runs use it. Jobs accumulate across batches.
 17b. **One-row re-read** (FC-00034): "↻ This row" on any OCR row re-reads just that
     employee+date from its image (focus prompt names employee, date and current
-    reading; EC picks the nearest clock-in). The row is updated in place (same id),
-    becomes an unedited OCR row with a new `_ocr` baseline, is unapproved and flagged
-    "Re-read from image — check and approve". A reviewer-edited row asks first. No match
-    leaves the row unchanged. Other rows are never touched.
+    reading; EC picks the nearest clock-in). **Since FC-00042 nothing changes at once:**
+    a comparison line appears under the row with the re-read value under each box and a
+    Current | Re-read toggle (Current by default), plus Use all re-read / Keep all
+    current / Apply / Discard. While it waits the row is unapproved, flagged and cannot
+    be approved. Apply (undoable, logged) sets each Re-read box to the new value and makes
+    it that box's OCR value; Current boxes, edits included, are untouched; the employee
+    never changes. Discard restores the earlier approval. No match leaves the row
+    unchanged. Other rows are never touched.
 18. **Break-confirmation friction is deliberate:** every entity has
     `breakMinutesSet`; exports prompt if any entity is unconfirmed; changing the
     default with per-day overrides present opens a 3-way modal (keep/overwrite/

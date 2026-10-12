@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-07 · **Slice:** S · **Risk:** Low · **Status:** done · **Affected entities:** All
 
+> 2026-10-12: the replace-on-confirm step is superseded by FC-00042 (the re-read is shown under each box and applied per box). Everything else stands.
+
 ## What
 A "↻ This row" button on every OCR review row re-reads only that employee and date from the source image. The fresh reading replaces that row's times; nothing else changes. Manual edits can then be made on top.
 
@@ -44,7 +46,7 @@ The reviewer's chosen employee name is kept when it is a schedule name, since th
 None.
 
 ## Tests
-`tests/fc00034_rerun_row.test.js` — `test_row_reread_replaces_only_that_row_in_place`, `test_manual_edits_after_reread_still_become_manual`, `test_reread_of_edited_row_asks_first`, `test_no_matching_entry_leaves_row_unchanged`, `test_easyclocking_picks_nearest_clock_in_on_same_date`, `test_single_reading_with_other_date_is_used_and_flagged`, `test_missing_image_is_reported_not_guessed`, `test_row_button_only_on_ocr_rows`
+`tests/fc00034_rerun_row.test.js` — `test_row_reread_replaces_only_that_row_in_place`, `test_manual_edits_after_reread_still_become_manual`, `test_reread_of_edited_row_keeps_edit_by_default` (was `test_reread_of_edited_row_asks_first`; FC-00042 replaced the confirm with a per-box comparison), `test_no_matching_entry_leaves_row_unchanged`, `test_easyclocking_picks_nearest_clock_in_on_same_date`, `test_single_reading_with_other_date_is_used_and_flagged`, `test_missing_image_is_reported_not_guessed`, `test_row_button_only_on_ocr_rows`
 
 ## Slice
 S

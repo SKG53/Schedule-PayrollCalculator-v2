@@ -63,12 +63,14 @@ test('test_checkpoint_before_each_big_action', async () => {
   await api.rerunOcrForImage(0, r.imageJobId, 1);
   const row = ent.intake.reviewRows[0];
   fakeGemini(api, [el({ clockIn1: '09:05', clockOut1: '17:10' })]);
-  await api.rerunOcrForRow(0, row.id);
+  await api.rerunOcrForRow(0, row.id); // FC-00042: only shows the comparison; Apply is the big action
+  api.rereadChooseAll(row.id, 'reread');
+  api.applyReread(row.id);
   api.importPayrollSettingsFile(settingsFile(api, [['Undo Co', 'Ann', '15', 'Hourly', 'Cash']]), false);
   api.clearIntake(0);
   api.switchEntity(1);
   api.removeEntity();
-  assert.deepEqual(labels(api), ['Schedule load', 'Run OCR', 'Image re-run', 'Row re-read', 'Settings import', 'Clear intake', 'Remove entity']);
+  assert.deepEqual(labels(api), ['Schedule load', 'Run OCR', 'Image re-run', 'Re-read apply', 'Settings import', 'Clear intake', 'Remove entity']);
   assert.ok(api.getCheckpoints().every(c => !c.running));
 });
 

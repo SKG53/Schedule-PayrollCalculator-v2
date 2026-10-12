@@ -316,6 +316,22 @@ table.review .mini-btn.approve{background:rgba(22,163,74,0.08);color:var(--green
 table.review .mini-btn.approve:hover{background:rgba(22,163,74,0.16)}
 table.review .mini-btn.reject{color:var(--red)}
 table.review td.low-conf{background:rgba(217,119,6,0.08)}
+/* FC-00042: per-box edit marker and the re-read comparison line */
+table.review input.box-edited{background:#E0F2FE;border-color:#7DD3FC}
+table.review tr.reread-row td{background:#FFFBEB;border-bottom:2px solid #FCD34D;vertical-align:top}
+table.review td.rr-label{font-size:11px;font-weight:600;color:#92400E;text-align:right;padding-right:8px}
+table.review td.rr-label span{font-weight:400;color:var(--text3)}
+table.review .rr-note{font-weight:400;color:#92400E}
+table.review td.rr-cell{font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:center}
+table.review td.rr-same{color:var(--text3)}
+table.review .rr-val{padding:2px 0 4px}
+table.review .rr-val.rr-diff{font-weight:700;color:#92400E}
+table.review .rr-toggle{display:inline-flex;flex-direction:column;border:1px solid var(--border);border-radius:4px;overflow:hidden;min-width:62px}
+table.review .rr-toggle button{border:0;background:var(--surface);font-size:10px;padding:2px 6px;cursor:pointer;font-family:'Outfit',sans-serif;color:var(--text2);white-space:nowrap}
+table.review .rr-toggle button+button{border-top:1px solid var(--border)}
+table.review .rr-toggle button.on{background:var(--blue);color:#fff}
+table.review td.rr-actions{white-space:normal}
+table.review td.rr-actions .mini-btn{margin:0 4px 4px 0}
 table.review tr.source-tc{}
 table.review tr.source-ec{}
 .src-chip{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;letter-spacing:0.3px}
@@ -1736,7 +1752,7 @@ function _recordBulkApproval(ent,changed,to,label){
   changed.forEach(id=>{from[id]=!to;toMap[id]=to;});
   _record({type:'reviewApproveBulk',screen:'intake',target:{kind:'reviewRows',entity:ent.id,field:'approved'},from,to:toMap,meta:{count:changed.length,empName:label||'',entityName:ent.name||''}});
 }
-const _REVIEW_LOG_TYPES=new Set(['reviewEdit','reviewApprove','reviewApproveBulk','reviewRowAdd','reviewRowDelete','reviewIgnore']);
+const _REVIEW_LOG_TYPES=new Set(['reviewEdit','reviewApprove','reviewApproveBulk','reviewRowAdd','reviewRowDelete','reviewIgnore','reviewReread']);
 function _applyReviewChange(entry,invert){
   const t=entry.target||{};
   const value=invert?entry.from:entry.to;
@@ -1754,6 +1770,11 @@ function _applyReviewChange(entry,invert){
     const at=rows.findIndex(r=>r.id===t.id);
     if(value==null){if(at>=0)rows.splice(at,1);}
     else if(at<0){const i=Math.max(0,Math.min((entry.meta&&entry.meta.index)||0,rows.length));rows.splice(i,0,_cloneState(value));ent.intake.ocrDone=true;}
+  }else if(entry.type==='reviewReread'){
+    const h=findReviewRow(t.id);if(!h||!value)return;
+    if(!h.row._ocr)h.row._ocr=_reviewerFieldSnapshot(h.row);
+    Object.keys(value.values||{}).forEach(k=>{h.row[k]=value.values[k];h.row._ocr[k]=value.ocr[k];});
+    _applyReviewerEditState(h.row);recomputeRowFlags(h.row,h.ent);h.row.approved=false;
   }else if(entry.type==='reviewIgnore'){
     if(!ent)return;
     ensureIntakeState(ent);
@@ -1769,7 +1790,7 @@ function canRevertEntry(e){
   if(e.type==='toolSetting')return true;
   if(!_REVIEW_LOG_TYPES.has(e.type))return !!_reducers[e.type];
   const t=e.target||{};
-  if(e.type==='reviewEdit'||e.type==='reviewApprove')return !!findReviewRow(t.id);
+  if(e.type==='reviewEdit'||e.type==='reviewApprove'||e.type==='reviewReread')return !!findReviewRow(t.id);
   if(e.type==='reviewApproveBulk')return Object.keys(e.from||{}).some(id=>findReviewRow(id));
   const ent=entities.find(x=>x.id===t.entity);if(!ent)return false;
   if(e.type==='reviewRowAdd')return !!findReviewRow(t.id);
@@ -1791,7 +1812,7 @@ const _HISTORY_KIND={wage:'Wage',wageBlank:'Wage',payMethod:'Pay method',splitDe
   breakOverride:'Break',entityBreak:'Entity break',sortMode:'Sort order',entityPaletteSet:'Palette',rosterAdd:'Added to roster',
   rosterRename:'Name',rosterAliasAdd:'Alias added',rosterAliasRemove:'Alias removed',rosterActiveSet:'Active',rosterFieldSet:'Roster field',
   reviewEdit:'Punch edit',reviewApprove:'Approval',reviewApproveBulk:'Approval (bulk)',reviewRowAdd:'Row added',reviewRowDelete:'Row deleted',
-  reviewIgnore:'Ignore time cards',toolSetting:'Tool setting',revert:'Revert'};
+  reviewIgnore:'Ignore time cards',reviewReread:'Re-read applied',toolSetting:'Tool setting',revert:'Revert'};
 const _REVIEW_FIELD_LABEL={date:'Date',empName:'Employee',clockIn1:'In 1',clockOut1:'Out 1',clockIn2:'In 2',clockOut2:'Out 2',clockIn3:'In 3',clockOut3:'Out 3'};
 function _historyKind(e){
   if(e.type==='reviewEdit'&&e.target&&e.target.field==='empName')return'Employee assignment';
@@ -1801,6 +1822,7 @@ function _historyField(e){
   const t=e.target||{};
   if(e.type==='reviewEdit')return(_REVIEW_FIELD_LABEL[t.field]||t.field)+(e.meta&&e.meta.date&&t.field!=='date'?' · '+e.meta.date:'');
   if(e.type==='reviewApprove'||e.type==='reviewRowAdd'||e.type==='reviewRowDelete')return(e.meta&&e.meta.date)||'';
+  if(e.type==='reviewReread')return((e.meta&&e.meta.fields)||[]).map(k=>_REVIEW_FIELD_LABEL[k]||k).join(', ')+(e.meta&&e.meta.date?' · '+e.meta.date:'');
   if(e.type==='reviewApproveBulk')return((e.meta&&e.meta.count)||0)+' row'+((e.meta&&e.meta.count)===1?'':'s');
   if(e.type==='breakOverride')return DAY_SHORT[t.day]||'';
   if(e.type==='rosterFieldSet')return t.field||'';
@@ -1817,6 +1839,7 @@ function _historyVal(e,v){
     if(e.type==='reviewApproveBulk'){const vals=Object.values(v);return vals.length&&vals[0]?'Approved':'Not approved';}
     if(e.type==='reviewRowAdd'||e.type==='reviewRowDelete')return'row '+(v.empName||'(no name)')+' '+(v.date||'');
     if(e.type==='rosterAdd')return v.id||'(new)';
+    if(e.type==='reviewReread')return Object.keys(v.values||{}).map(k=>(_REVIEW_FIELD_LABEL[k]||k)+' '+(k==='date'?(v.values[k]||'(blank)'):(to12h(v.values[k])||'(blank)'))).join(', ');
     return JSON.stringify(v);
   }
   const f=e.target&&e.target.field;
@@ -5155,38 +5178,76 @@ function _pickRowReread(row,cands){
   const note=(row.date&&best.date!==row.date)?`Re-read returned date ${best.date} (row had ${row.date}) — verify`:'';
   return{row:best,note};
 }
-function _applyRowReread(row,fresh,kind,model,note,ent){
-  ['date','dayIdx','clockIn1','clockOut1','clockIn2','clockOut2','clockIn3','clockOut3','confidence','notes','_lowConf','_gt2Pairs','_escalated'].forEach(k=>{row[k]=fresh[k];});
-  if(fresh._yearCorrectedFrom!=null)row._yearCorrectedFrom=fresh._yearCorrectedFrom;else delete row._yearCorrectedFrom;
-  // The reviewer may already have fixed the name; keep it when it is a schedule name.
-  const sched=(ent.employees||[]).map(e=>e.name).filter(Boolean);
-  if(!(row.empName&&sched.includes(row.empName))){
-    row.empName=fresh.empName;row.rawOcrName=fresh.rawOcrName;
-    if(fresh._suggestedName)row._suggestedName=fresh._suggestedName;else delete row._suggestedName;
-  }
-  row.source=kind;row._ocrSource=kind;row._ocr=_reviewerFieldSnapshot(row);row._reviewerEdited=false;
-  delete row._superseded;
-  row.approved=false;row.modelUsed=model;row._rereadRow=true;
+// FC-00042: a row re-read changes nothing by itself. The fresh reading is held next to the row
+// (row._reread) and shown under each box with a Current | Re-read choice, Current by default.
+function _startRereadCompare(row,fresh,kind,model,note,ent){
+  const values={},choice={};
+  REVIEWER_EDIT_FIELDS.forEach(k=>{values[k]=fresh[k]||'';choice[k]='current';});
+  const keep=row._reread?row._reread.wasApproved:!!row.approved;
+  row._reread={values,choice,kind,model:model||'',note:note||'',confidence:fresh.confidence,lowConf:!!fresh._lowConf,escalated:!!fresh._escalated,
+    yearCorrectedFrom:fresh._yearCorrectedFrom!=null?fresh._yearCorrectedFrom:null,wasApproved:keep};
+  row.approved=false;
   recomputeRowFlags(row,ent);
-  if(fresh.notes)row.flags.push(fresh.notes);
-  if(note)row.flags.push(note);
-  row.flags.push('Re-read from image — check and approve');
-  row.needsReview=true;
 }
-function rerunOcrForRow(entIdx,rowId){
-  const ent=entities[entIdx];
-  const row=ent&&ent.intake?ent.intake.reviewRows.find(r=>r.id===rowId):null;
-  return _withCheckpoint('Row re-read · '+((row&&(row.empName||row.rawOcrName))||'row')+(row&&row.date?' '+row.date:''),()=>_rerunOcrForRowImpl(entIdx,rowId));
+function setRereadChoice(id,k,c){
+  const h=findReviewRow(id);if(!h||!h.row._reread||!REVIEWER_EDIT_FIELDS.includes(k))return;
+  h.row._reread.choice[k]=c==='reread'?'reread':'current';
+  refreshReviewTable(entities.indexOf(h.ent));
 }
-async function _rerunOcrForRowImpl(entIdx,rowId){
+function rereadChooseAll(id,c){
+  const h=findReviewRow(id);if(!h||!h.row._reread)return;
+  REVIEWER_EDIT_FIELDS.forEach(k=>{h.row._reread.choice[k]=c==='reread'?'reread':'current';});
+  refreshReviewTable(entities.indexOf(h.ent));
+}
+function discardReread(id){
+  const h=findReviewRow(id);if(!h||!h.row._reread)return;
+  const was=h.row._reread.wasApproved;
+  delete h.row._reread;
+  recomputeRowFlags(h.row,h.ent);
+  h.row.approved=was&&isRowStructurallyValid(h.row);
+  refreshReviewTable(entities.indexOf(h.ent));
+  scheduleDynamicRecompute();
+}
+// Apply: every box set to Re-read takes the re-read value AND makes it that box's OCR value
+// (so it is no longer an edit); every box left on Current is untouched, edits included.
+function applyReread(id){
+  const h=findReviewRow(id);if(!h||!h.row._reread)return false;
+  _withCheckpoint('Re-read apply · '+(h.row.empName||'row')+(h.row.date?' '+h.row.date:''),()=>_applyRereadImpl(id));
+  return true;
+}
+function _applyRereadImpl(id){
+  const h=findReviewRow(id);const row=h.row,rr=row._reread;
+  const fields=REVIEWER_EDIT_FIELDS.filter(k=>rr.choice[k]==='reread');
+  const from={values:{},ocr:{}},to={values:{},ocr:{}};
+  fields.forEach(k=>{
+    from.values[k]=row[k]||'';from.ocr[k]=row._ocr?(row._ocr[k]||''):'';
+    to.values[k]=rr.values[k]||'';to.ocr[k]=rr.values[k]||'';
+  });
+  const changed=fields.some(k=>from.values[k]!==to.values[k]||from.ocr[k]!==to.ocr[k]);
+  if(!row._ocr&&fields.length){row._ocr=_reviewerFieldSnapshot(row);row._ocrSource=row._ocrSource||rr.kind;}
+  fields.forEach(k=>{row[k]=rr.values[k]||'';row._ocr[k]=rr.values[k]||'';});
+  if(fields.length){
+    row.modelUsed=rr.model;row.confidence=rr.confidence;row._lowConf=rr.lowConf;row._escalated=rr.escalated;row._rereadRow=true;
+    if(fields.includes('date')){if(rr.yearCorrectedFrom!=null)row._yearCorrectedFrom=rr.yearCorrectedFrom;else delete row._yearCorrectedFrom;}
+  }
+  const was=rr.wasApproved;
+  delete row._reread;
+  _applyReviewerEditState(row);
+  recomputeRowFlags(row,h.ent);
+  row.approved=!changed&&was&&isRowStructurallyValid(row)&&!row.needsReview;
+  if(fields.length)_record({type:'reviewReread',screen:'intake',target:{kind:'reviewRow',entity:h.ent.id,id:row.id},from,to,meta:_rowMeta(row,h.ent,{fields})});
+  refreshReviewTable(entities.indexOf(h.ent));
+  scheduleDynamicRecompute();
+  showToast(fields.length?'Re-read applied to '+fields.length+' box'+(fields.length===1?'':'es')+' — check and approve':'Re-read closed — current values kept','ok');
+}
+// FC-00042: no checkpoint here — a re-read only adds a comparison; Apply is the undoable step.
+async function rerunOcrForRow(entIdx,rowId){
   const ent=entities[entIdx];if(!ent||!ent.intake)return;
   const row=ent.intake.reviewRows.find(r=>r.id===rowId);if(!row)return;
   if(row._rerunning){showToast('Already re-reading this row','ok');return;}
   const job=_findJobForRow(entIdx,row);
   if(!job||!job.file){showToast(job&&job._img?'This image is not attached yet. Use "Re-attach images" at the top of Actuals Intake, then re-read.':'The image for this row is not in this session. Re-upload it to re-read the row.','err');return;}
   if(job.status==='running'||job.status==='retrying'){showToast('OCR is already running for this image','ok');return;}
-  const edited=row._reviewerEdited||row.source==='MN';
-  if(edited&&!confirm('This row has your manual edits. Re-reading replaces them with a fresh OCR reading (you can edit again afterwards). Continue?'))return;
   const apiKey=_prefGet('pv26_api_key');
   if(!apiKey){showToast('No Gemini API key set. Opening Settings…','err');openSettings();return;}
   const kind=row._ocrSource==='EC'||(!row._ocrSource&&job.kind==='EC')?'EC':'TC';
@@ -5216,10 +5277,10 @@ async function _rerunOcrForRowImpl(entIdx,rowId){
     refreshReviewTable(entIdx);
     return;
   }
-  _applyRowReread(row,pick.row,kind,model,pick.note,ent);
+  _startRereadCompare(row,pick.row,kind,model,pick.note,ent);
   refreshReviewTable(entIdx);
   scheduleDynamicRecompute();
-  showToast(`Row re-read · ${row.empName||'row'} ${row.date} — check and approve`,'ok');
+  showToast(`Re-read ready · ${row.empName||'row'} ${row.date} — pick Current or Re-read under each box, then Apply`,'ok');
 }
 
 function runOcrForEntity(idx){
@@ -5775,6 +5836,16 @@ function _applyReviewerEditState(row){
   row._reviewerEdited=edited;
 }
 function _isManualRow(r){return !!r&&r.source==='MN'}
+// FC-00042: edit state is per box. A box is edited when its value differs from what OCR read
+// for that box (row._ocr[k]); the OCR value travels with the box, so merge/split carry it.
+function _boxEdited(row,k){return !!(row&&row._ocr&&row._ocrSource&&(row[k]||'')!==(row._ocr[k]||''))}
+function editedBoxes(row){return REVIEWER_EDIT_FIELDS.filter(k=>_boxEdited(row,k))}
+// A punch pair is a manual entry when its In or Out box was edited; a row typed by hand
+// (no OCR reading at all) is manual throughout.
+function _isManualPair(row,n){
+  if(!row||!row._ocr||!row._ocrSource)return _isManualRow(row);
+  return _boxEdited(row,'clockIn'+n)||_boxEdited(row,'clockOut'+n);
+}
 // Positive-length overlap between two punch pairs on the same clock-in date.
 function _pairsOverlap(a,b){return a.in<b.outAdj&&b.in<a.outAdj}
 
@@ -5989,7 +6060,7 @@ function renderReviewTableHtml(ent,idx){
   html+='</div>';
 
   // Table for the active bucket
-  const show3=rows.some(r=>r.clockIn3||r.clockOut3);
+  const show3=rows.some(r=>r.clockIn3||r.clockOut3||(r._reread&&(r._reread.values.clockIn3||r._reread.values.clockOut3)));
   if(activeRows.length===0){
     html+='<div class="review-empty-msg">No rows for this employee yet.</div>';
     return html;
@@ -6100,11 +6171,12 @@ function renderReviewTableHtml(ent,idx){
     const dayLbl=r.date?(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(r.date+'T00:00:00').getDay()]||''):'';
     html+=`<td style="text-align:center;font-size:11px;color:var(--text2);font-family:'IBM Plex Mono',monospace">${dayLbl}</td>`;
     // 5. Date
-    html+=`<td><input class="date-field" type="date" value="${escHtml(r.date)}" oninput="updateReviewFieldLight('${r.id}','date',this.value)" onchange="commitDateInput(this,'${r.id}','date')" onblur="commitDateInput(this,'${r.id}','date')"></td>`;
+    html+=`<td><input class="date-field${_boxEdited(r,'date')?' box-edited':''}"${_boxEdited(r,'date')?` title="Edited — OCR read ${escHtml(r._ocr.date||'(blank)')}"`:''} type="date" value="${escHtml(r.date)}" oninput="updateReviewFieldLight('${r.id}','date',this.value)" onchange="commitDateInput(this,'${r.id}','date')" onblur="commitDateInput(this,'${r.id}','date')"></td>`;
     // 6-11 Time pairs (use TEXT inputs to prevent native time-picker focus loss between digits)
     const timeFields=show3?['clockIn1','clockOut1','clockIn2','clockOut2','clockIn3','clockOut3']:['clockIn1','clockOut1','clockIn2','clockOut2'];
     timeFields.forEach(k=>{
-      html+=`<td><input class="time-text" type="text" inputmode="text" pattern="[0-9:aApPmM ]*" maxlength="8" placeholder="--:-- --" value="${escHtml(to12h(r[k]))}" oninput="handleTimeInput(this,'${r.id}','${k}')" onblur="commitTimeInput(this,'${r.id}','${k}')" style="width:76px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:11px"></td>`;
+      const ed=_boxEdited(r,k);
+      html+=`<td><input class="time-text${ed?' box-edited':''}"${ed?` title="Edited — OCR read ${escHtml(to12h(r._ocr[k])||'(blank)')}"`:''} type="text" inputmode="text" pattern="[0-9:aApPmM ]*" maxlength="8" placeholder="--:-- --" value="${escHtml(to12h(r[k]))}" oninput="handleTimeInput(this,'${r.id}','${k}')" onblur="commitTimeInput(this,'${r.id}','${k}')" style="width:76px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:11px"></td>`;
     });
     // Flags
     const editBadge=r._reviewerEdited?`<span class="new-badge" style="background:#E0F2FE;color:#075985;border-color:#7DD3FC" title="You changed what OCR read. Your values are final: this row is now a manual entry and survives OCR re-runs.">✎ edited (was ${escHtml(r._ocrSource||'OCR')})</span>`:'';
@@ -6115,12 +6187,31 @@ function renderReviewTableHtml(ent,idx){
     if(r.approved){
       html+=`<button class="mini-btn" onclick="unapproveReviewRow('${r.id}')" title="Unapprove this row (keeps your edits)">↺ Unapprove</button>`;
     }else{
-      html+=`<button class="mini-btn approve" onclick="approveReviewRow('${r.id}')" title="Approve this row">✓ Approve</button>`;
+      html+=r._reread?`<button class="mini-btn approve" disabled style="opacity:0.45;cursor:not-allowed" title="Apply or Discard the re-read below first">✓ Approve</button>`:`<button class="mini-btn approve" onclick="approveReviewRow('${r.id}')" title="Approve this row">✓ Approve</button>`;
     }
     html+='</td></tr>';
+    if(r._reread)html+=_rereadRowHtml(r,timeFields);
   });
   html+='</tbody></table></div>';
   return html;
+}
+
+// FC-00042: the comparison line under a row with a waiting re-read. One cell per box, aligned
+// under it: the re-read value and a Current | Re-read toggle (Current by default).
+function _rereadRowHtml(r,timeFields){
+  const rr=r._reread;
+  const cell=k=>{
+    const v=rr.values[k]||'',cur=r[k]||'';
+    const shown=k==='date'?(v||'(blank)'):(to12h(v)||'(blank)');
+    if(v===cur&&!_boxEdited(r,k))return`<td class="rr-cell rr-same" title="Re-read matches the current value">${escHtml(shown)}</td>`;
+    const pickRe=rr.choice[k]==='reread';
+    return`<td class="rr-cell"><div class="rr-val${v!==cur?' rr-diff':''}">${escHtml(shown)}</div><div class="rr-toggle"><button class="${pickRe?'':'on'}" onclick="setRereadChoice('${r.id}','${k}','current')" title="Keep the current value${_boxEdited(r,k)?' (your edit)':''}">Current</button><button class="${pickRe?'on':''}" onclick="setRereadChoice('${r.id}','${k}','reread')" title="Use the re-read value; it becomes this box's OCR reading">Re-read</button></div></td>`;
+  };
+  let h=`<tr class="reread-row" data-reread-for="${r.id}"><td colspan="6" class="rr-label">↻ Re-read${rr.model?' <span>('+escHtml(rr.model)+')</span>':''}${rr.note?'<div class="rr-note">'+escHtml(rr.note)+'</div>':''}</td>`;
+  h+=cell('date');
+  timeFields.forEach(k=>{h+=cell(k);});
+  h+=`<td colspan="2" class="rr-actions"><button class="mini-btn" onclick="rereadChooseAll('${r.id}','reread')">Use all re-read</button><button class="mini-btn" onclick="rereadChooseAll('${r.id}','current')">Keep all current</button><button class="mini-btn approve" onclick="applyReread('${r.id}')">Apply</button><button class="mini-btn" onclick="discardReread('${r.id}')">Discard</button></td></tr>`;
+  return h;
 }
 
 // Light utility: JS-string escape for onclick attribute values
@@ -6297,11 +6388,13 @@ function recomputeRowFlags(row,ent){
   if(row._gt2Pairs)row.flags.push('Too many punch pairs — verify');
   if(row._escalated)row.flags.push('Escalated to Pro');
   if(row._yearCorrectedFrom!=null)row.flags.push(`Year corrected (OCR read ${row._yearCorrectedFrom}) — verify date`);
+  if(row._reread)row.flags.push('Re-read waiting — choose values, then Apply');
   row.needsReview=row.flags.length>0;
 }
 
 function approveReviewRow(id){
   const h=findReviewRow(id);if(!h)return;
+  if(h.row._reread){showToast('This row has a re-read waiting. Apply or Discard it first.','err');return;}
   if(!isRowStructurallyValid(h.row)){
     showToast('Cannot approve — this row has a missing clock-in or clock-out. Fix the pair first.','err');
     return;
@@ -6341,14 +6434,14 @@ function approveAll(idx){
   let approved=0,skipped=0;const changed=[];
   ent.intake.reviewRows.forEach(r=>{
     if(r.approved)return;
-    if(!isRowStructurallyValid(r)){skipped++;return;}
+    if(!isRowStructurallyValid(r)||r._reread){skipped++;return;}
     r.approved=true;approved++;changed.push(r.id);
   });
   _recordBulkApproval(ent,changed,true,'');
   refreshReviewTable(idx);
   scheduleDynamicRecompute();
   if(skipped>0){
-    showToast('Approved '+approved+' row'+(approved===1?'':'s')+'. '+skipped+' skipped — fix missing punch pairs first.','err');
+    showToast('Approved '+approved+' row'+(approved===1?'':'s')+'. '+skipped+' skipped — fix missing punch pairs or finish waiting re-reads first.','err');
   }else if(approved>0){
     showToast('Approved '+approved+' row'+(approved===1?'':'s')+'.','ok');
   }
@@ -6371,7 +6464,7 @@ function approveAllForEmployee(idx,empKey){
   ent.intake.reviewRows.forEach(r=>{
     if(reviewBucketKey(r,ent)!==empKey)return;
     if(r.approved)return;
-    if(!isRowStructurallyValid(r)){skipped++;return;}
+    if(!isRowStructurallyValid(r)||r._reread){skipped++;return;}
     r.approved=true;approved++;changed.push(r.id);
   });
   _recordBulkApproval(ent,changed,true,empKey==='__unrecognized__'?'Unrecognized':empKey);
@@ -6379,7 +6472,7 @@ function approveAllForEmployee(idx,empKey){
   scheduleDynamicRecompute();
   const label=empKey==='__unrecognized__'?'Unrecognized':empKey;
   if(skipped>0){
-    showToast('Approved '+approved+' row'+(approved===1?'':'s')+' for '+label+'. '+skipped+' skipped — fix missing punch pairs first.','err');
+    showToast('Approved '+approved+' row'+(approved===1?'':'s')+' for '+label+'. '+skipped+' skipped — fix missing punch pairs or finish waiting re-reads first.','err');
   }else if(approved>0){
     showToast('Approved '+approved+' row'+(approved===1?'':'s')+' for '+label+'.','ok');
   }
@@ -6503,14 +6596,11 @@ function syncActualsFromReview(){
         const outAdj=adjIn+dur;
         return{in:adjIn,out:outH,outAdj,minutes:Math.round(dur*60)};
       };
-      const p1=mkPair(r.clockIn1,r.clockOut1);if(p1)pairs.push(p1);
-      const p2=mkPair(r.clockIn2,r.clockOut2);if(p2)pairs.push(p2);
-      const p3=mkPair(r.clockIn3,r.clockOut3);if(p3)pairs.push(p3);
+      // FC-00029 / FC-00042: tag every pair with its row and whether it is a manual entry (its
+      // In or Out box edited, or a hand-typed row), so the supersede pass below can drop OCR
+      // pairs a manual pair replaces.
+      [1,2,3].forEach(n=>{const p=mkPair(r['clockIn'+n],r['clockOut'+n]);if(p){p._mn=_isManualPair(r,n);p._rowId=r.id;pairs.push(p);}});
       if(pairs.length===0)return;
-      // FC-00029: tag every pair with its row and whether it is a manual (reviewer) entry, so
-      // the supersede pass below can drop OCR pairs a manual pair replaces.
-      const mn=_isManualRow(r);
-      pairs.forEach(p=>{p._mn=mn;p._rowId=r.id;});
       const pad=n=>String(n).padStart(2,'0');
       const iso=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
       // Merge with any existing row with same empName+date (e.g., EasyClocking row per punch-pair)

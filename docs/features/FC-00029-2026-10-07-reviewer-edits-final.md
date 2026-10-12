@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-07 · **Slice:** M · **Risk:** Medium-High · **Status:** done · **Affected entities:** All
 
+> 2026-10-12: edit state is now per box and the supersede rule per pair (FC-00042). Pay results of this card's tests are unchanged.
+
 ## What
 When the owner changes a time or date that OCR produced, the row becomes a manual (MN) entry: his value is kept, survives OCR re-runs, and in payroll an approved MN pair replaces any overlapping TC/EC pair for the same employee and date. Non-overlapping pairs still add.
 

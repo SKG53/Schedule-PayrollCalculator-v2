@@ -1,6 +1,6 @@
 # FC-00042 — Per-box edit tracking; re-read shows values side by side
 
-**Date:** 2026-10-12 · **Slice:** M · **Risk:** Medium-High · **Status:** approved · **Affected entities:** All
+**Date:** 2026-10-12 · **Slice:** M · **Risk:** Medium-High · **Status:** done · **Affected entities:** All
 
 ## What
 Every date and time box remembers on its own whether the owner edited it, and re-reading a row from its image never overwrites anything: each box shows the re-read value underneath with a choice of which to keep.
@@ -29,6 +29,18 @@ Fully reversible via one revert commit.
 6. While a comparison is pending the row is unapproved and flagged; the pending comparison is saved in the snapshot (FC-00037).
 7. The row's employee is not changed by a re-read (as in FC-00034).
 8. Apply takes a checkpoint (FC-00039) and is logged in History.
+
+## Built
+- Per-box state is derived from the per-box OCR value (`row._ocr[box]`), which moves with the value when rows are merged or split (FC-00043). `editedBoxes(row)` lists them; edited boxes render blue with "Edited — OCR read …".
+- `syncActualsFromReview` tags each pair manual by `_isManualPair` (In or Out edited; a hand-typed row is manual throughout). A date-only edit makes the row MN but its pairs stay OCR readings.
+- `rerunOcrForRow` no longer asks and no longer replaces: it stores the reading in `row._reread` (values, per-box choice, model, confidence) and shows the comparison line. Approve (single and bulk) skips a row with a waiting re-read; the row's Approve button is disabled.
+- Apply is a checkpoint ("Re-read apply · <employee> <date>") and a History line ("Re-read applied", revertable: value and OCR baseline both go back). Apply with every box on Current closes the comparison and restores the earlier approval; Discard does the same.
+- The re-read itself is no longer a checkpoint (it changes no value). The FC-00034 test that expected a confirm was rewritten for the new flow.
+
+## Verification
+- `npm test`: 242 pass (234 + 8 new; FC-00034 and FC-00039 tests updated to the new flow, all FC-00029 tests unchanged).
+- Five real weeks: every row's hours and pay identical to the v2 base; undo and snapshot round-trips still exact.
+- Real browser (Chromium): re-read on an edited row shows the comparison; choosing Re-read on In 1 and Apply sets In 1, keeps the edited Out 1, and offers "Undo Re-read apply". No console errors.
 
 ## Out of scope
 Re-reading a whole image (unchanged). Merge and split (FC-00043).
