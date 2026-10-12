@@ -36,6 +36,8 @@ Fully reversible via one revert commit.
 - Settings are compared for anyone on payroll in either week, plus anyone whose Active flag moved.
 - Thresholds are **tool settings**: in session state (so Undo, History revert and the snapshot carry them) and in a new **Tool Settings** sheet of the settings file (`Week-over-week hours swing`, `Week-over-week pay swing %`). Older settings files without the sheet keep the defaults.
 
+- After review: both weeks are read with actuals re-synced from their approved review rows (a snapshot saved off the Payroll tab could hold stale actuals), and this week is read from a copy so the check never touches it.
+
 ## Verification
 - `npm test`: 234 pass (228 + 6 new).
 - Real weeks, each against the week before: 4 comparisons in under 50 ms each; this week's state unchanged in every one.

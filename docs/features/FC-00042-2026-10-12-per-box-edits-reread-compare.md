@@ -37,6 +37,8 @@ Fully reversible via one revert commit.
 - Apply is a checkpoint ("Re-read apply · <employee> <date>") and a History line ("Re-read applied", revertable: value and OCR baseline both go back). Apply with every box on Current closes the comparison and restores the earlier approval; Discard does the same.
 - The re-read itself is no longer a checkpoint (it changes no value). The FC-00034 test that expected a confirm was rewritten for the new flow.
 
+- After review: a corrected **date** makes every pair on that row manual, so a row whose date the owner fixed still replaces overlapping OCR punches exactly as under FC-00029 (pay unchanged). Time edits are per pair as specified.
+
 ## Verification
 - `npm test`: 242 pass (234 + 8 new; FC-00034 and FC-00039 tests updated to the new flow, all FC-00029 tests unchanged).
 - Five real weeks: every row's hours and pay identical to the v2 base; undo and snapshot round-trips still exact.

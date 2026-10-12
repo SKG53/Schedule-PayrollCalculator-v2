@@ -38,6 +38,8 @@ Fully reversible via one revert commit.
 - Merge and split each take a checkpoint and add a History line; Revert on that line puts the original rows back in their places (only while the merged/split rows still exist).
 - Refused: different employees, a missing date, dates more than one day apart, more than 3 pairs, a row with a re-read waiting.
 
+- After review: rows whose punches overlap (the same time read twice) are refused with "Delete the duplicate row instead" — merged, they would be chained as the next day and paid twice. When every review row of an entity is unapproved (e.g. right after merging its only rows), punches built from those rows stop paying until a row is approved again; actuals loaded from a file are kept as before.
+
 ## Verification
 - `npm test`: 251 pass (242 + 9 new).
 - Hours identical before and after merge and split with a zero break (same-day and overnight cases); with a 30-minute minimum the preview shows the change.

@@ -39,6 +39,8 @@ Fully reversible via one revert commit. The file format is new; nothing existing
 - Save and Open are refused while an OCR run or re-read is in progress.
 - Undo of "Open snapshot" also puts the screen (tab, entity) back.
 
+- After review: "refused while a re-read is in progress" is now true (see FC-00039 note).
+
 ## Verification
 - `npm test`: 228 pass (218 + 10 new).
 - Five real weeks: snapshot of the fully loaded week (170–210 KB without images) reopened in a fresh session gives the identical state and identical pay on every row.

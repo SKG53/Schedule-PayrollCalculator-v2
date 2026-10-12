@@ -1619,6 +1619,7 @@ function _cloneState(v){
     const x=v[k];
     if(typeof x==='function')continue;
     // Object URLs can be revoked (Clear); a restored job rebuilds its own on first render.
+    if(k==='_rerunning')continue; // in-flight marker of a live row, never part of a saved state
     o[k]=k==='_thumbUrl'?null:_cloneState(x);
   }
   return o;
@@ -1706,10 +1707,16 @@ function _rerenderAll(){
   renderUndoBar();
   _refreshHistoryIfOpen();
 }
+// True while an OCR run, an image re-run or a row re-read is in flight. No big action, undo,
+// snapshot or settings Apply may start then: its checkpoint would capture half a run.
+function _actionRunning(){
+  return _checkpoints.some(c=>c.afterSeq==null)||entities.some(e=>e.intake&&(e.intake.ocrInProgress||
+    (e.intake.reviewRows||[]).some(r=>r&&r._rerunning)||(e.intake._ocrJobs||[]).some(j=>j&&(j.status==='running'||j.status==='retrying'))));
+}
 function _entLabel(idx){const e=entities[idx];return e?(e.name||('Entity '+(idx+1))):''}
 function _checkpoint(label,meta){
   const state=_captureState();
-  const cp={id:'cp'+(++_cpSeq),label,at:Date.now(),state,beforeSig:_stateSig(state),beforeSeq:session.seq,afterSeq:null,afterSig:null,meta:meta||{}};
+  const cp={id:'cp'+(++_cpSeq),label,at:Date.now(),state,parts:meta&&meta.restoreUi?_snapshotPartsData():null,beforeSig:_stateSig(state),beforeSeq:session.seq,afterSeq:null,afterSig:null,meta:meta||{}};
   _checkpoints.push(cp);
   if(_checkpoints.length>CHECKPOINT_LIMIT)_checkpoints.splice(0,_checkpoints.length-CHECKPOINT_LIMIT);
   renderUndoBar();
@@ -1725,6 +1732,7 @@ function _checkpointDone(cp){
 }
 // Runs fn (sync or async) behind a checkpoint labelled `label`.
 function _withCheckpoint(label,fn,meta){
+  if(_actionRunning()){showToast('An OCR run or re-read is still going. Wait for it to finish, then try again.','err');return undefined;}
   const cp=_checkpoint(label,meta);
   const prevTag=_cpTag;
   let out;
@@ -1752,7 +1760,7 @@ function undoCheckpoint(cpId){
   const i=cpId?_checkpoints.findIndex(c=>c.id===cpId):_checkpoints.length-1;
   const cp=_checkpoints[i];
   if(!cp){showToast('Nothing to undo','err');return false;}
-  if(_checkpoints.some(c=>c.afterSeq==null)){showToast('An action is still running. Wait for it to finish, then undo.','err');return false;}
+  if(_actionRunning()){showToast('An action is still running (OCR or a re-read). Wait for it to finish, then undo.','err');return false;}
   const loss=_undoLoss(cp);
   if(loss.count||loss.later.length||loss.untracked){
     const parts=[];
@@ -1763,6 +1771,7 @@ function undoCheckpoint(cpId){
   }
   // Opening a snapshot moves the screen too, so undoing it puts the screen back as well.
   _restoreState(cp.state,{ui:!!(cp.meta&&cp.meta.restoreUi)});
+  if(cp.parts)Object.keys(_snapshotParts).forEach(k=>_snapshotParts[k].load(cp.parts[k]===undefined?null:cp.parts[k]));
   _checkpoints.splice(i);
   _rerenderAll();
   showToast('Undone: '+cp.label,'ok');
@@ -1812,6 +1821,8 @@ function _recordBulkApproval(ent,changed,to,label){
   changed.forEach(id=>{from[id]=!to;toMap[id]=to;});
   _record({type:'reviewApproveBulk',screen:'intake',target:{kind:'reviewRows',entity:ent.id,field:'approved'},from,to:toMap,meta:{count:changed.length,empName:label||'',entityName:ent.name||''}});
 }
+// The same checks approveReviewRow makes, for reverts that would re-approve a row.
+function _approvable(row){return isRowStructurallyValid(row)&&!row._reread;}
 const _REVIEW_LOG_TYPES=new Set(['reviewEdit','reviewApprove','reviewApproveBulk','reviewRowAdd','reviewRowDelete','reviewIgnore','reviewReread','reviewMerge','reviewSplit']);
 function _applyReviewChange(entry,invert){
   const t=entry.target||{};
@@ -1820,9 +1831,9 @@ function _applyReviewChange(entry,invert){
   if(entry.type==='reviewEdit'){
     const h=findReviewRow(t.id);if(h)_setReviewFieldRaw(h,t.field,value);
   }else if(entry.type==='reviewApprove'){
-    const h=findReviewRow(t.id);if(h)h.row.approved=!!value;
+    const h=findReviewRow(t.id);if(h)h.row.approved=!!value&&_approvable(h.row);
   }else if(entry.type==='reviewApproveBulk'){
-    Object.keys(value||{}).forEach(id=>{const h=findReviewRow(id);if(h)h.row.approved=!!value[id];});
+    Object.keys(value||{}).forEach(id=>{const h=findReviewRow(id);if(h)h.row.approved=!!value[id]&&_approvable(h.row);});
   }else if(entry.type==='reviewRowAdd'||entry.type==='reviewRowDelete'){
     if(!ent)return;
     ensureIntakeState(ent);
@@ -2060,9 +2071,7 @@ function _isFileRef(v){return !!v&&typeof v==='object'&&typeof v.__imgRef==='num
 
 // ---- Build ----
 // True while an action is mid-flight: a snapshot taken then would save half a run.
-function _busyForSnapshot(){
-  return _checkpoints.some(c=>c.afterSeq==null)||entities.some(e=>e.intake&&e.intake.ocrInProgress);
-}
+function _busyForSnapshot(){return _actionRunning();}
 async function buildSnapshot(){
   const st=_captureState();
   const images=[];
@@ -2350,6 +2359,7 @@ function _wowModelFromSnapshot(snap){
     const st=_cloneState(snap.state);
     _resolveSnapshotImages(st,snap.images||[]);
     _restoreState(st,{ui:false});
+    syncActualsFromReview(); // a snapshot saved off the Payroll tab may hold stale actuals
     model=_wowCollect();
   }finally{
     _unstashLive(stash);
@@ -2374,7 +2384,8 @@ function clearLastWeek(){_wowLast=null;renderWowPanel();}
 const _WOW_METHOD={deposit:'Deposit',cash:'Cash',both:'Deposit + Cash',contract:'Contract Check'};
 function weekOverWeek(){
   if(!_wowLast)return null;
-  const last=_wowLast,cur=_wowCollect();
+  // This week is read from a copy too (with actuals re-synced), so the check never touches it.
+  const last=_wowLast,cur=_simulate(()=>{syncActualsFromReview();return _wowCollect();}).result;
   const thrH=getToolSetting('wowHours'),thrP=getToolSetting('wowPayPct');
   const out={newPeople:[],missing:[],rate:[],blank:[],method:[],deposit:[],flat:[],active:[],swings:[],entities:[],warning:'',thresholds:{hours:thrH,payPct:thrP}};
   const lp=last.people,cp=cur.people,ls=last.settings,cs=cur.settings;
@@ -2528,6 +2539,12 @@ function mergePlan(entIdx,rowIds){
   if(!all.length)return{ok:false,error:'The selected rows have no punches.'};
   if(all.length>MERGE_MAX_PAIRS)return{ok:false,error:'A merged row holds at most '+MERGE_MAX_PAIRS+' in/out pairs; these rows have '+all.length+'.'};
   all.sort((a,b)=>(a.abs==null?Infinity:a.abs)-(b.abs==null?Infinity:b.abs));
+  // Overlapping punches are two readings of the same time. Merged into one row they would be
+  // chained as the next day and paid twice, so they are refused (delete the duplicate instead).
+  for(let i=1;i<all.length;i++){
+    if(all[i].abs!=null&&all[i-1].absEnd!=null&&all[i].abs<all[i-1].absEnd)
+      return{ok:false,error:'These rows overlap ('+to12h(all[i-1].in)+'–'+to12h(all[i-1].out)+' and '+to12h(all[i].in)+'–'+to12h(all[i].out)+'): the same time read twice. Delete the duplicate row instead of merging.'};
+  }
   const firstDated=all.find(p=>p.abs!=null)||all[0];
   const filingDate=_isoAddDays(dates[0],Math.floor((firstDated.abs||0)/1440));
   const gaps=[];
@@ -2823,7 +2840,7 @@ function _computeStagePreview(){
   // Tool settings (thresholds).
   const tkeys=[...new Set([...Object.keys(TOOL_SETTING_DEFAULTS),...Object.keys(after.toolSettings||{})])];
   const tdiffs=tkeys.filter(k=>{const a=(after.toolSettings||{})[k],b=(before.toolSettings||{})[k];return a!==undefined&&a!==b;})
-    .map(k=>({field:k,label:_toolSettingLabel(k),from:String(getToolSetting(k)===undefined?'(none)':getToolSetting(k)),to:String(after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.target&&e.target.field===k)}));
+    .map(k=>({field:k,label:_toolSettingLabel(k),from:String(getToolSetting(k)===undefined?'(none)':getToolSetting(k)),to:String(after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.screen!=='settings-import'&&e.target&&e.target.field===k)}));
   if(tdiffs.length)changes.push({row:null,id:'',entity:'',name:'(tool settings)',diffs:tdiffs});
   // Not in file: session people of the file's entities the file does not mention.
   const fileEnts=new Set(rows.map(r=>r.entityName.toLowerCase().trim()));
@@ -3991,6 +4008,7 @@ function parseActuals(rows,mode,entityIdx){
     }
   }else{
     entities[entityIdx].actualDays=parsed;
+    delete entities[entityIdx]._actualsFromReview; // loaded from a file, not from review rows
   }
 
   renderPayroll();
@@ -6563,10 +6581,13 @@ function _isManualRow(r){return !!r&&r.source==='MN'}
 // for that box (row._ocr[k]); the OCR value travels with the box, so merge/split carry it.
 function _boxEdited(row,k){return !!(row&&row._ocr&&row._ocrSource&&(row[k]||'')!==(row._ocr[k]||''))}
 function editedBoxes(row){return REVIEWER_EDIT_FIELDS.filter(k=>_boxEdited(row,k))}
-// A punch pair is a manual entry when its In or Out box was edited; a row typed by hand
-// (no OCR reading at all) is manual throughout.
+// A punch pair is a manual entry when its In or Out box was edited or the row's date was
+// corrected; a row typed by hand (no OCR reading at all) is manual throughout.
 function _isManualPair(row,n){
   if(!row||!row._ocr||!row._ocrSource)return _isManualRow(row);
+  // A corrected date means the owner checked this row's punches for that day (FC-00029):
+  // every pair on it counts as manual.
+  if(_boxEdited(row,'date'))return true;
   return _boxEdited(row,'clockIn'+n)||_boxEdited(row,'clockOut'+n);
 }
 // Positive-length overlap between two punch pairs on the same clock-in date.
@@ -7304,7 +7325,10 @@ function syncActualsFromReview(){
     // rows for this entity, preserve any pre-existing actualDays rather than overwriting
     // with []. (When at least one review row is approved, we materialize the full review
     // set as the source of truth, replacing prior actualDays as before.)
-    if(approvedRows.length===0)return;
+    // Review-row punches are the exception: once every review row is unapproved (merge,
+    // split and a waiting re-read unapprove rows), punches built from them must not keep
+    // paying (FC-00043 review).
+    if(approvedRows.length===0){if(ent._actualsFromReview){ent.actualDays=[];delete ent._actualsFromReview;}return;}
     const out=[];
     const schedNames=ent.employees.map(e=>e.name).filter(Boolean);
     approvedRows.forEach(r=>{
@@ -7359,6 +7383,7 @@ function syncActualsFromReview(){
       day.pairs=kept;
     });
     ent.actualDays=out;
+    ent._actualsFromReview=true;
   });
 }
 

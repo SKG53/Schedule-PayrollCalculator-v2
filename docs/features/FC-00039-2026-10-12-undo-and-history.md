@@ -39,6 +39,8 @@ Fully reversible via one revert commit.
 - History shows one "Added to roster" line per person (the schedule table re-sends it on every entity switch).
 - Logged and revertable review types: `reviewEdit` (time, date, employee assignment), `reviewApprove`, `reviewApproveBulk`, `reviewRowAdd`, `reviewRowDelete`, `reviewIgnore`. A line whose row or entity is gone shows no Revert.
 
+- After review: no big action, Undo, snapshot save/open or settings Apply can start while an OCR run, image re-run or row re-read is in flight (one rule, `_actionRunning`). A re-read in flight is never part of a saved state. Undo of "Open snapshot" also restores the snapshot add-ons (editable preview copy, download ticks). Reverting an "unapprove" line re-approves only a row that would pass Approve today.
+
 ## Verification
 - `npm test`: 218 pass (208 before + 10 new).
 - Five real weeks: every row's hours, actual, deposit and cash identical to the v2 base (9e0aa83). On each week a schedule reload plus a later change, then Undo, returns the state, the change log and every payroll figure exactly.
