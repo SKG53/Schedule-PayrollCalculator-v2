@@ -316,6 +316,11 @@ table.review .mini-btn.approve{background:rgba(22,163,74,0.08);color:var(--green
 table.review .mini-btn.approve:hover{background:rgba(22,163,74,0.16)}
 table.review .mini-btn.reject{color:var(--red)}
 table.review td.low-conf{background:rgba(217,119,6,0.08)}
+/* FC-00043: merge bar */
+.merge-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--text2)}
+.merge-bar .btn{font-size:11px;padding:4px 10px}
+.merge-bar .btn[disabled]{opacity:0.45;cursor:not-allowed;transform:none}
+.merge-bar .merge-why{color:var(--amber)}
 /* FC-00042: per-box edit marker and the re-read comparison line */
 table.review input.box-edited{background:#E0F2FE;border-color:#7DD3FC}
 table.review tr.reread-row td{background:#FFFBEB;border-bottom:2px solid #FCD34D;vertical-align:top}
@@ -554,6 +559,14 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>History</h2><button class="btn" onclick="closeHistory()">Close</button></div>
     <p class="sub">Big actions can be undone as a whole. Every single change below can be reverted on its own; a revert is added as its own line and nothing after it is removed.</p>
     <div id="historyBody"></div>
+  </div>
+</div>
+
+<!-- ===== MERGE PREVIEW (FC-00043) ===== -->
+<div id="mergeOverlay" class="overlay" style="display:none" onclick="if(event.target===this)closeMergePreview()">
+  <div class="overlay-panel" style="max-width:640px">
+    <h2>Merge rows</h2>
+    <div id="mergeBody"></div>
   </div>
 </div>
 
@@ -1752,7 +1765,7 @@ function _recordBulkApproval(ent,changed,to,label){
   changed.forEach(id=>{from[id]=!to;toMap[id]=to;});
   _record({type:'reviewApproveBulk',screen:'intake',target:{kind:'reviewRows',entity:ent.id,field:'approved'},from,to:toMap,meta:{count:changed.length,empName:label||'',entityName:ent.name||''}});
 }
-const _REVIEW_LOG_TYPES=new Set(['reviewEdit','reviewApprove','reviewApproveBulk','reviewRowAdd','reviewRowDelete','reviewIgnore','reviewReread']);
+const _REVIEW_LOG_TYPES=new Set(['reviewEdit','reviewApprove','reviewApproveBulk','reviewRowAdd','reviewRowDelete','reviewIgnore','reviewReread','reviewMerge','reviewSplit']);
 function _applyReviewChange(entry,invert){
   const t=entry.target||{};
   const value=invert?entry.from:entry.to;
@@ -1770,6 +1783,8 @@ function _applyReviewChange(entry,invert){
     const at=rows.findIndex(r=>r.id===t.id);
     if(value==null){if(at>=0)rows.splice(at,1);}
     else if(at<0){const i=Math.max(0,Math.min((entry.meta&&entry.meta.index)||0,rows.length));rows.splice(i,0,_cloneState(value));ent.intake.ocrDone=true;}
+  }else if(entry.type==='reviewMerge'||entry.type==='reviewSplit'){
+    _revertMergeSplit(entry,invert);
   }else if(entry.type==='reviewReread'){
     const h=findReviewRow(t.id);if(!h||!value)return;
     if(!h.row._ocr)h.row._ocr=_reviewerFieldSnapshot(h.row);
@@ -1791,6 +1806,7 @@ function canRevertEntry(e){
   if(!_REVIEW_LOG_TYPES.has(e.type))return !!_reducers[e.type];
   const t=e.target||{};
   if(e.type==='reviewEdit'||e.type==='reviewApprove'||e.type==='reviewReread')return !!findReviewRow(t.id);
+  if(e.type==='reviewMerge'||e.type==='reviewSplit')return _mergeSplitRevertable(e);
   if(e.type==='reviewApproveBulk')return Object.keys(e.from||{}).some(id=>findReviewRow(id));
   const ent=entities.find(x=>x.id===t.entity);if(!ent)return false;
   if(e.type==='reviewRowAdd')return !!findReviewRow(t.id);
@@ -1812,7 +1828,7 @@ const _HISTORY_KIND={wage:'Wage',wageBlank:'Wage',payMethod:'Pay method',splitDe
   breakOverride:'Break',entityBreak:'Entity break',sortMode:'Sort order',entityPaletteSet:'Palette',rosterAdd:'Added to roster',
   rosterRename:'Name',rosterAliasAdd:'Alias added',rosterAliasRemove:'Alias removed',rosterActiveSet:'Active',rosterFieldSet:'Roster field',
   reviewEdit:'Punch edit',reviewApprove:'Approval',reviewApproveBulk:'Approval (bulk)',reviewRowAdd:'Row added',reviewRowDelete:'Row deleted',
-  reviewIgnore:'Ignore time cards',reviewReread:'Re-read applied',toolSetting:'Tool setting',revert:'Revert'};
+  reviewIgnore:'Ignore time cards',reviewReread:'Re-read applied',reviewMerge:'Rows merged',reviewSplit:'Row split',toolSetting:'Tool setting',revert:'Revert'};
 const _REVIEW_FIELD_LABEL={date:'Date',empName:'Employee',clockIn1:'In 1',clockOut1:'Out 1',clockIn2:'In 2',clockOut2:'Out 2',clockIn3:'In 3',clockOut3:'Out 3'};
 function _historyKind(e){
   if(e.type==='reviewEdit'&&e.target&&e.target.field==='empName')return'Employee assignment';
@@ -1823,6 +1839,7 @@ function _historyField(e){
   if(e.type==='reviewEdit')return(_REVIEW_FIELD_LABEL[t.field]||t.field)+(e.meta&&e.meta.date&&t.field!=='date'?' · '+e.meta.date:'');
   if(e.type==='reviewApprove'||e.type==='reviewRowAdd'||e.type==='reviewRowDelete')return(e.meta&&e.meta.date)||'';
   if(e.type==='reviewReread')return((e.meta&&e.meta.fields)||[]).map(k=>_REVIEW_FIELD_LABEL[k]||k).join(', ')+(e.meta&&e.meta.date?' · '+e.meta.date:'');
+  if(e.type==='reviewMerge'||e.type==='reviewSplit')return(e.meta&&e.meta.date)||'';
   if(e.type==='reviewApproveBulk')return((e.meta&&e.meta.count)||0)+' row'+((e.meta&&e.meta.count)===1?'':'s');
   if(e.type==='breakOverride')return DAY_SHORT[t.day]||'';
   if(e.type==='rosterFieldSet')return t.field||'';
@@ -1839,6 +1856,8 @@ function _historyVal(e,v){
     if(e.type==='reviewApproveBulk'){const vals=Object.values(v);return vals.length&&vals[0]?'Approved':'Not approved';}
     if(e.type==='reviewRowAdd'||e.type==='reviewRowDelete')return'row '+(v.empName||'(no name)')+' '+(v.date||'');
     if(e.type==='rosterAdd')return v.id||'(new)';
+    if(e.type==='reviewMerge')return v.rows?v.rows.length+' rows':'1 row, '+_rowPairList(v.row).length+' pairs';
+    if(e.type==='reviewSplit')return v.rows?v.rows.length+' rows':'1 row, '+_rowPairList(v.row).length+' pairs';
     if(e.type==='reviewReread')return Object.keys(v.values||{}).map(k=>(_REVIEW_FIELD_LABEL[k]||k)+' '+(k==='date'?(v.values[k]||'(blank)'):(to12h(v.values[k])||'(blank)'))).join(', ');
     return JSON.stringify(v);
   }
@@ -2375,6 +2394,219 @@ function _wowPanelHtml(){
 function renderWowPanel(){
   const host=document.getElementById('wowHost');
   if(host)host.innerHTML=_wowPanelHtml();
+}
+
+// ================================================================
+// FC-00043 — merge and split review rows by hand
+// ================================================================
+// Values never change: merge regroups the selected rows' punch pairs into one row (time order,
+// filed under the earliest clock-in date), split makes one row per pair. Each box carries its
+// OCR value (row._ocr[box], FC-00042), so an edited box stays edited wherever it lands.
+const MERGE_MAX_PAIRS=3;
+const _rowSelection=new Set(); // UI only: ids of ticked review rows
+function toggleRowSelect(entIdx,id,on){if(on)_rowSelection.add(id);else _rowSelection.delete(id);refreshReviewTable(entIdx);}
+function clearRowSelection(){_rowSelection.clear();}
+function selectedRowIds(entIdx){
+  const ent=entities[entIdx];if(!ent||!ent.intake)return[];
+  return ent.intake.reviewRows.filter(r=>_rowSelection.has(r.id)).map(r=>r.id);
+}
+function _isoAddDays(iso,n){const d=new Date(iso+'T00:00:00');d.setDate(d.getDate()+n);const p=x=>String(x).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());}
+function _rowPairList(row){
+  const out=[];
+  [1,2,3].forEach(n=>{
+    const i=row['clockIn'+n]||'',o=row['clockOut'+n]||'';
+    if(!i&&!o)return;
+    out.push({n,in:i,out:o,inOcr:row._ocr?(row._ocr['clockIn'+n]||''):'',outOcr:row._ocr?(row._ocr['clockOut'+n]||''):'',hasOcr:!!(row._ocr&&row._ocrSource),date:row.date,row});
+  });
+  return out;
+}
+// Chains a day's pairs the way payroll does (a later pair that starts before the previous
+// one ended is the next day) and returns absolute minutes from the day's midnight.
+function _chainPairs(pairs){
+  const out=[];let prevEnd=null;
+  pairs.forEach(p=>{
+    const ih=parseClockTime(p.in),oh=parseClockTime(p.out);
+    if(ih==null||oh==null){out.push(Object.assign({},p,{start:null,end:null,minutes:0}));return;}
+    let start=ih*60;const dur=((oh-ih)*60+1440)%1440||0;
+    if(prevEnd!=null)while(start<prevEnd)start+=1440;
+    const end=start+dur;prevEnd=end;
+    out.push(Object.assign({},p,{start,end,minutes:dur}));
+  });
+  return out;
+}
+// One day's billable hours with the entity's rule: span − max(mandatory break, actual gap).
+function _dayHours(chained,ent,empName,dayIdx){
+  const ok=chained.filter(p=>p.start!=null);
+  if(!ok.length)return 0;
+  const first=Math.min(...ok.map(p=>p.start)),last=Math.max(...ok.map(p=>p.end));
+  const span=(last-first)/60,worked=ok.reduce((s,p)=>s+p.minutes,0)/60;
+  const gap=Math.max(0,span-worked);
+  const ovr=getBreakOverride(ent.id,empName,dayIdx);
+  const brk=ovr!=null?Math.max(0,Math.min(ovr/60,span)):Math.max((ent.breakMinutes||0)/60,gap);
+  return Math.max(0,span-brk);
+}
+const _r2=x=>Math.round(x*100)/100;
+function _dayIdxOf(iso){const d=new Date(iso+'T00:00:00');return isNaN(d)?0:d.getDay();}
+// Pure: what a merge of these rows would produce, or why it cannot happen.
+function mergePlan(entIdx,rowIds){
+  const ent=entities[entIdx];if(!ent||!ent.intake)return{ok:false,error:'No rows.'};
+  const rows=ent.intake.reviewRows.filter(r=>rowIds.includes(r.id));
+  if(rows.length<2)return{ok:false,error:'Select two or more rows to merge.'};
+  const names=new Set(rows.map(r=>(r.empName||'').trim().toLowerCase()));
+  if(names.size!==1||names.has(''))return{ok:false,error:'Only rows for the same employee can be merged.'};
+  if(rows.some(r=>!r.date))return{ok:false,error:'Every selected row needs a date.'};
+  if(rows.some(r=>r._reread))return{ok:false,error:'A selected row has a re-read waiting. Apply or Discard it first.'};
+  const dates=[...new Set(rows.map(r=>r.date))].sort();
+  if(dates.length>2||(dates.length===2&&_isoAddDays(dates[0],1)!==dates[1]))return{ok:false,error:'Rows must be on the same date or on back-to-back dates.'};
+  // Absolute start of every pair, rows chained on their own dates.
+  const all=[];
+  rows.forEach(r=>{
+    const base=(new Date(r.date+'T00:00:00')-new Date(dates[0]+'T00:00:00'))/60000;
+    _chainPairs(_rowPairList(r)).forEach(p=>all.push(Object.assign(p,{abs:p.start==null?null:base+p.start,absEnd:p.end==null?null:base+p.end})));
+  });
+  if(!all.length)return{ok:false,error:'The selected rows have no punches.'};
+  if(all.length>MERGE_MAX_PAIRS)return{ok:false,error:'A merged row holds at most '+MERGE_MAX_PAIRS+' in/out pairs; these rows have '+all.length+'.'};
+  all.sort((a,b)=>(a.abs==null?Infinity:a.abs)-(b.abs==null?Infinity:b.abs));
+  const firstDated=all.find(p=>p.abs!=null)||all[0];
+  const filingDate=_isoAddDays(dates[0],Math.floor((firstDated.abs||0)/1440));
+  const gaps=[];
+  for(let i=1;i<all.length;i++){if(all[i].abs!=null&&all[i-1].absEnd!=null)gaps.push(all[i].abs-all[i-1].absEnd);}
+  const emp=rows[0].empName;
+  let before=0;
+  dates.forEach(d=>{
+    const dayRows=rows.filter(r=>r.date===d);
+    const chained=[];dayRows.forEach(r=>_chainPairs(_rowPairList(r)).forEach(p=>chained.push(p)));
+    before+=_dayHours(chained,ent,emp,_dayIdxOf(d));
+  });
+  const after=_dayHours(_chainPairs(all),ent,emp,_dayIdxOf(filingDate));
+  return{ok:true,rows,pairs:all,filingDate,gapsMin:gaps,hoursBefore:_r2(before),hoursAfter:_r2(after),employee:emp,dateRow:rows.find(r=>r.date===filingDate)||rows.slice().sort((a,b)=>a.date.localeCompare(b.date))[0]};
+}
+function _newRowId(){return 'r_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);}
+// Builds a row from pairs; each box takes its value and its own OCR value with it.
+function _rowFromPairs(base,pairs,date,dateOcr,extra){
+  const row=_cloneState(base);
+  row.id=_newRowId();
+  row.date=date;
+  [1,2,3].forEach(n=>{row['clockIn'+n]='';row['clockOut'+n]='';});
+  const anyOcr=pairs.some(p=>p.hasOcr)||!!(base._ocr&&base._ocrSource);
+  if(anyOcr){
+    row._ocr={date:dateOcr};
+    [1,2,3].forEach(n=>{row._ocr['clockIn'+n]='';row._ocr['clockOut'+n]='';});
+    row._ocrSource=base._ocrSource||(pairs.find(p=>p.hasOcr)||{row:{}}).row._ocrSource||'TC';
+  }else{delete row._ocr;delete row._ocrSource;row.source='MN';}
+  pairs.forEach((p,i)=>{
+    const n=i+1;
+    row['clockIn'+n]=p.in;row['clockOut'+n]=p.out;
+    // A box from a hand-typed row has no OCR reading: '' keeps it an edit.
+    if(row._ocr){row._ocr['clockIn'+n]=p.hasOcr?p.inOcr:'';row._ocr['clockOut'+n]=p.hasOcr?p.outOcr:'';}
+  });
+  delete row._reread;delete row._superseded;delete row._newSinceUpload;delete row._editStart;delete row._dateCommitted;delete row._rerunning;
+  row.dayIdx=_dayIdxOf(date);
+  row.approved=false;
+  Object.assign(row,extra||{});
+  if(row._ocr)_applyReviewerEditState(row);
+  return row;
+}
+function mergeRows(entIdx,rowIds){
+  const plan=mergePlan(entIdx,rowIds);
+  if(!plan.ok){showToast(plan.error,'err');return null;}
+  let merged=null;
+  _withCheckpoint('Merge rows · '+(plan.employee||'employee')+' '+plan.filingDate,()=>{merged=_mergeRowsImpl(entIdx,plan);});
+  return merged;
+}
+function _mergeRowsImpl(entIdx,plan){
+  const ent=entities[entIdx];const rows=ent.intake.reviewRows;
+  const indexes=plan.rows.map(r=>rows.indexOf(r));
+  const at=Math.min(...indexes);
+  const jobIds=[],names=[];
+  plan.rows.forEach(r=>{(r._imageJobIds||[r.imageJobId]).forEach(j=>{if(j&&!jobIds.includes(j))jobIds.push(j);});(r._originalNames||[r.originalName]).forEach(n=>{if(n&&!names.includes(n))names.push(n);});});
+  const dr=plan.dateRow;
+  const merged=_rowFromPairs(dr,plan.pairs,plan.filingDate,dr._ocr&&dr._ocrSource?dr._ocr.date:'',{_merged:true,_imageJobIds:jobIds,_originalNames:names,imageJobId:jobIds[0]||dr.imageJobId,originalName:names[0]||dr.originalName});
+  delete merged._split;
+  const from={rows:plan.rows.map(r=>_cloneState(r)),indexes};
+  // Remove sources (highest index first), then place the merged row where the first one was.
+  indexes.slice().sort((a,b)=>b-a).forEach(i=>rows.splice(i,1));
+  rows.splice(Math.min(at,rows.length),0,merged);
+  recomputeRowFlags(merged,ent);
+  plan.rows.forEach(r=>_rowSelection.delete(r.id));
+  _record({type:'reviewMerge',screen:'intake',target:{kind:'reviewRow',entity:ent.id,id:merged.id},from,to:{row:_cloneState(merged),index:rows.indexOf(merged)},
+    meta:{empName:merged.empName,date:merged.date,entityName:ent.name||'',count:plan.rows.length,hoursBefore:plan.hoursBefore,hoursAfter:plan.hoursAfter}});
+  refreshReviewTable(entIdx);scheduleDynamicRecompute();
+  showToast('Merged '+plan.rows.length+' rows into one ('+plan.pairs.length+' pairs) · '+merged.date+' — check and approve','ok');
+  return merged;
+}
+function splitRow(entIdx,rowId){
+  const ent=entities[entIdx];if(!ent||!ent.intake)return null;
+  const row=ent.intake.reviewRows.find(r=>r.id===rowId);if(!row)return null;
+  if(row._reread){showToast('This row has a re-read waiting. Apply or Discard it first.','err');return null;}
+  const pairs=_rowPairList(row);
+  if(pairs.length<2){showToast('Only a row with two or more pairs can be split.','err');return null;}
+  let out=null;
+  _withCheckpoint('Split row · '+(row.empName||'row')+' '+(row.date||''),()=>{out=_splitRowImpl(entIdx,row,pairs);});
+  return out;
+}
+function _splitRowImpl(entIdx,row,pairs){
+  const ent=entities[entIdx];const rows=ent.intake.reviewRows;
+  const index=rows.indexOf(row);
+  const dateOcr=row._ocr&&row._ocrSource?row._ocr.date:'';
+  const pieces=pairs.map(p=>{const r=_rowFromPairs(row,[p],row.date,dateOcr,{_split:true});delete r._merged;
+    if(row._imageJobIds){r._imageJobIds=row._imageJobIds.slice();r._originalNames=(row._originalNames||[]).slice();}return r;});
+  const from={row:_cloneState(row),index};
+  rows.splice(index,1,...pieces);
+  pieces.forEach(r=>recomputeRowFlags(r,ent));
+  _rowSelection.delete(row.id);
+  _record({type:'reviewSplit',screen:'intake',target:{kind:'reviewRow',entity:ent.id,id:row.id},from,to:{rows:pieces.map(r=>_cloneState(r)),index},
+    meta:{empName:row.empName,date:row.date,entityName:ent.name||'',count:pieces.length}});
+  refreshReviewTable(entIdx);scheduleDynamicRecompute();
+  showToast('Split into '+pieces.length+' rows · '+(row.date||'')+' — check and approve','ok');
+  return pieces;
+}
+// History revert for merge/split: puts the rows back exactly as they were before.
+function _revertMergeSplit(entry,invert){
+  const ent=entities.find(e=>e.id===(entry.target||{}).entity);if(!ent||!ent.intake)return;
+  const rows=ent.intake.reviewRows;
+  const take=(ids)=>{let at=Infinity;ids.forEach(id=>{const i=rows.findIndex(r=>r.id===id);if(i>=0){at=Math.min(at,i);rows.splice(i,1);}});return at===Infinity?rows.length:at;};
+  if(!invert)return; // only the revert direction is offered
+  if(entry.type==='reviewMerge'){
+    take([entry.to.row.id]);
+    // Original positions, lowest first, put every source row back where it was.
+    entry.from.rows.map((r,k)=>({r,i:entry.from.indexes[k]})).sort((a,b)=>a.i-b.i).forEach(({r,i})=>rows.splice(Math.min(i,rows.length),0,_cloneState(r)));
+  }else if(entry.type==='reviewSplit'){
+    const at=take(entry.to.rows.map(r=>r.id));
+    rows.splice(Math.min(at,rows.length),0,_cloneState(entry.from.row));
+  }
+}
+function _mergeSplitRevertable(e){
+  if(e.type==='reviewMerge')return !!findReviewRow(e.to.row.id)&&e.from.rows.every(r=>!findReviewRow(r.id));
+  if(e.type==='reviewSplit')return e.to.rows.every(r=>!!findReviewRow(r.id))&&!findReviewRow(e.from.row.id);
+  return false;
+}
+// ---- UI ----
+function _mergeBarHtml(idx){
+  const ids=selectedRowIds(idx);
+  const plan=ids.length>=2?mergePlan(idx,ids):null;
+  const can=!!(plan&&plan.ok);
+  const why=ids.length<2?'Tick two or more rows of the same employee on the same or back-to-back dates':(plan&&!plan.ok?plan.error:'');
+  return`<div class="merge-bar" id="mergeBar_${idx}"><span>${ids.length} row${ids.length===1?'':'s'} selected</span><button class="btn" ${can?'':'disabled'} title="${escHtml(why||'Preview the merge before it is applied')}" onclick="openMergePreview(${idx})">⧉ Merge rows…</button>${ids.length?`<button class="btn" onclick="clearRowSelection();refreshReviewTable(${idx})">Clear selection</button>`:''}${why&&ids.length>=2?`<span class="merge-why">${escHtml(why)}</span>`:''}</div>`;
+}
+let _mergePending=null;
+function _fmtGap(m){if(m==null)return'';const s=m<0?'overlap ':'';m=Math.abs(m);const h=Math.floor(m/60),mm=m%60;return s+(h?h+'h ':'')+mm+'m';}
+function openMergePreview(idx){
+  const plan=mergePlan(idx,selectedRowIds(idx));
+  if(!plan.ok){showToast(plan.error,'err');return;}
+  _mergePending={idx,ids:plan.rows.map(r=>r.id)};
+  const pairsHtml=plan.pairs.map((p,i)=>`<tr><td>${i+1}</td><td>${escHtml(to12h(p.in)||'(blank)')}</td><td>${escHtml(to12h(p.out)||'(blank)')}</td><td>${escHtml(p.date)}${p.abs!=null&&p.abs>=1440*(Math.floor((plan.pairs[0].abs||0)/1440)+1)?' (next day)':''}</td><td>${i>0?escHtml(_fmtGap(plan.gapsMin[i-1])):''}</td></tr>`).join('');
+  const body=`<p class="sub">${escHtml(plan.employee)} · ${plan.rows.length} rows → 1 row filed under <b>${escHtml(plan.filingDate)}</b> (earliest clock-in). No time or date value changes; edited boxes stay edited. The merged row is unapproved.</p>
+    <table class="history-table"><thead><tr><th>Pair</th><th>In</th><th>Out</th><th>From row dated</th><th>Gap before</th></tr></thead><tbody>${pairsHtml}</tbody></table>
+    <p style="margin-top:12px;font-size:13px">Hours for these punches: <b>${plan.hoursBefore.toFixed(2)}</b> → <b>${plan.hoursAfter.toFixed(2)}</b>${plan.hoursBefore!==plan.hoursAfter?' <span style="color:var(--amber)">(the break minimum applies once per day)</span>':''}</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="closeMergePreview()">Cancel</button><button class="btn btn-primary" onclick="confirmMerge()">Merge</button></div>`;
+  const ov=document.getElementById('mergeOverlay');if(ov){document.getElementById('mergeBody').innerHTML=body;ov.style.display='flex';}
+}
+function closeMergePreview(){_mergePending=null;const ov=document.getElementById('mergeOverlay');if(ov)ov.style.display='none';}
+function confirmMerge(){
+  const p=_mergePending;closeMergePreview();
+  if(!p)return null;
+  return mergeRows(p.idx,p.ids);
 }
 function recompute(opts){
   const idx=entities.findIndex(e=>e.id===(opts&&opts.entity));
@@ -4890,6 +5122,9 @@ function _thumbUrlForJob(job){
 // Render the Image-column thumbnail (or placeholder) for one review row. Returns an HTML
 // fragment meant to sit immediately before the filename text in the existing Image <td>.
 function _thumbCellHtml(entIdx,rowOrName){
+  // FC-00043: a merged row keeps every source image.
+  if(rowOrName&&typeof rowOrName==='object'&&Array.isArray(rowOrName._imageJobIds)&&rowOrName._imageJobIds.length>1)
+    return rowOrName._imageJobIds.map(id=>_thumbCellHtml(entIdx,{imageJobId:id,originalName:''})).join('');
   const job=_findJobForRow(entIdx,rowOrName);
   if(job&&!job.file&&job._img&&job._img.thumb){
     // FC-00037: small copy saved in the snapshot until the original is re-attached.
@@ -5053,7 +5288,7 @@ async function retryOcrJob(idx,jobIdx,maxAttempts){
   const scheduleAnchors=buildScheduleAnchors(ent);
 
   // Drop any existing rows extracted from this file (in case of partial success on a prior attempt)
-  ent.intake.reviewRows=ent.intake.reviewRows.filter(r=>!_rowFromJob(r,job)||_isManualRow(r));
+  ent.intake.reviewRows=ent.intake.reviewRows.filter(r=>!_rowFromJob(r,job)||_isManualRow(r)||r._merged);
 
   let lastErr=null;
   for(let attempt=1;attempt<=maxAttempts;attempt++){
@@ -5102,7 +5337,7 @@ async function retryOcrJob(idx,jobIdx,maxAttempts){
         job.detail=`Attempt ${attempt}/${maxAttempts} failed — retrying in ${Math.round(OCR_RETRY_DELAY_MS/1000)}s…`;
         renderOcrFileList(idx,jobs);
         await new Promise(r=>setTimeout(r,OCR_RETRY_DELAY_MS));
-        ent.intake.reviewRows=ent.intake.reviewRows.filter(r=>!_rowFromJob(r,job)||_isManualRow(r));
+        ent.intake.reviewRows=ent.intake.reviewRows.filter(r=>!_rowFromJob(r,job)||_isManualRow(r)||r._merged);
       }else{
         job.status='err';
         const errMsg=(err.message||String(err)).slice(0,120);
@@ -5382,7 +5617,7 @@ async function _runOcrForEntityImpl(idx){
           renderOcrFileList(idx,jobs);
           await new Promise(r=>setTimeout(r,RETRY_DELAY));
           // Clear rows from failed attempt before retrying
-          ent.intake.reviewRows=ent.intake.reviewRows.filter(r=>!_rowFromJob(r,job)||_isManualRow(r));
+          ent.intake.reviewRows=ent.intake.reviewRows.filter(r=>!_rowFromJob(r,job)||_isManualRow(r)||r._merged);
         }else{
           job.status='err';
           job.detail=`Failed all ${MAX_ATTEMPTS} attempts: `+(err.message||String(err)).slice(0,100);
@@ -6095,8 +6330,10 @@ function renderReviewTableHtml(ent,idx){
   // Employee-level manual row button
   html+=`<div style="margin-top:6px;margin-bottom:4px"><button class="btn" onclick="addManualRow(${idx})" style="font-size:11px;padding:4px 10px">+ Add manual row for ${empLabel}</button></div>`;
 
+  html+=_mergeBarHtml(idx);
   html+='<div class="review-wrap" style="margin-top:10px"><table class="review">';
   html+='<thead><tr>';
+  html+='<th style="width:26px" title="Tick rows to merge them (FC-00043)"></th>';
   html+='<th style="width:34px"></th>'; // delete column (leftmost, per user request)
   html+='<th style="width:38px">Source</th>';
   html+='<th>Image</th>';
@@ -6112,6 +6349,8 @@ function renderReviewTableHtml(ent,idx){
     const cls=(r.approved?'approved':(r.needsReview?'needs-review':''))+(r._newSinceUpload?' new-since-upload':'');
     const srcCls=r.source==='TC'?'tc':(r.source==='EC'?'ec':(r.source==='MN'?'mn':(r.source==='XL'?'xl':'')));
     html+=`<tr class="${cls}" data-row-id="${r.id}">`;
+    // 0. Select for merge (FC-00043)
+    html+=`<td style="width:26px;text-align:center;padding:4px 2px"><input type="checkbox" class="row-select" style="width:auto" ${_rowSelection.has(r.id)?'checked':''} onchange="toggleRowSelect(${idx},'${r.id}',this.checked)" title="Select for Merge rows"></td>`;
     // 1. Delete X (leftmost)
     html+=`<td class="actions-cell" style="width:34px;padding:4px 2px"><button class="mini-btn reject" onclick="deleteReviewRow('${r.id}')" title="Delete row">✕</button></td>`;
     // 2. Source chip
@@ -6181,9 +6420,11 @@ function renderReviewTableHtml(ent,idx){
     // Flags
     const editBadge=r._reviewerEdited?`<span class="new-badge" style="background:#E0F2FE;color:#075985;border-color:#7DD3FC" title="You changed what OCR read. Your values are final: this row is now a manual entry and survives OCR re-runs.">✎ edited (was ${escHtml(r._ocrSource||'OCR')})</span>`:'';
     const supBadge=r._superseded?'<span class="new-badge" style="background:#F1F5F9;color:#475569;border-color:#CBD5E1" title="An approved manual entry for the same employee and date overlaps this row, so its overlapping punches are not paid.">⤳ replaced by manual entry</span>':'';
-    html+=`<td class="flag-cell">${renderFlagPills(r.flags)}${r._newSinceUpload?'<span class="new-badge" title="Added in a later upload for this employee — not part of the original batch">🆕 new</span>':''}${editBadge}${supBadge}</td>`;
+    const msBadge=(r._merged?'<span class="new-badge" style="background:#F5F3FF;color:#5B21B6;border-color:#C4B5FD" title="Made by merging rows by hand. Values unchanged; check and approve.">⧉ merged</span>':'')+(r._split?'<span class="new-badge" style="background:#F5F3FF;color:#5B21B6;border-color:#C4B5FD" title="Made by splitting a multi-pair row by hand. Values unchanged; check and approve.">⇹ split</span>':'');
+    html+=`<td class="flag-cell">${renderFlagPills(r.flags)}${r._newSinceUpload?'<span class="new-badge" title="Added in a later upload for this employee — not part of the original batch">🆕 new</span>':''}${editBadge}${supBadge}${msBadge}</td>`;
     // Per-row approve/unapprove button
     html+=`<td class="actions-cell" style="width:110px">`;
+    if(_rowPairList(r).length>=2)html+=`<button class="mini-btn" onclick="splitRow(${idx},'${r.id}')" title="Split into one row per in/out pair (same date)" style="margin-right:4px">⇹ Split</button>`;
     if(r.approved){
       html+=`<button class="mini-btn" onclick="unapproveReviewRow('${r.id}')" title="Unapprove this row (keeps your edits)">↺ Unapprove</button>`;
     }else{
@@ -6207,7 +6448,7 @@ function _rereadRowHtml(r,timeFields){
     const pickRe=rr.choice[k]==='reread';
     return`<td class="rr-cell"><div class="rr-val${v!==cur?' rr-diff':''}">${escHtml(shown)}</div><div class="rr-toggle"><button class="${pickRe?'':'on'}" onclick="setRereadChoice('${r.id}','${k}','current')" title="Keep the current value${_boxEdited(r,k)?' (your edit)':''}">Current</button><button class="${pickRe?'on':''}" onclick="setRereadChoice('${r.id}','${k}','reread')" title="Use the re-read value; it becomes this box's OCR reading">Re-read</button></div></td>`;
   };
-  let h=`<tr class="reread-row" data-reread-for="${r.id}"><td colspan="6" class="rr-label">↻ Re-read${rr.model?' <span>('+escHtml(rr.model)+')</span>':''}${rr.note?'<div class="rr-note">'+escHtml(rr.note)+'</div>':''}</td>`;
+  let h=`<tr class="reread-row" data-reread-for="${r.id}"><td colspan="7" class="rr-label">↻ Re-read${rr.model?' <span>('+escHtml(rr.model)+')</span>':''}${rr.note?'<div class="rr-note">'+escHtml(rr.note)+'</div>':''}</td>`;
   h+=cell('date');
   timeFields.forEach(k=>{h+=cell(k);});
   h+=`<td colspan="2" class="rr-actions"><button class="mini-btn" onclick="rereadChooseAll('${r.id}','reread')">Use all re-read</button><button class="mini-btn" onclick="rereadChooseAll('${r.id}','current')">Keep all current</button><button class="mini-btn approve" onclick="applyReread('${r.id}')">Apply</button><button class="mini-btn" onclick="discardReread('${r.id}')">Discard</button></td></tr>`;

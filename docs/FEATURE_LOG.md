@@ -46,4 +46,4 @@ Index of all Feature Cards. Updated at approval time and on status change.
 | FC-00040 | 2026-10-12 | M | Low | approved | [features/FC-00040-2026-10-12-downloads-page.md](features/FC-00040-2026-10-12-downloads-page.md) | Downloads page: every export in one list |
 | FC-00041 | 2026-10-12 | M | Low | done | [features/FC-00041-2026-10-12-week-over-week.md](features/FC-00041-2026-10-12-week-over-week.md) | Week-over-week check against last week's snapshot |
 | FC-00042 | 2026-10-12 | M | Medium-High | done | [features/FC-00042-2026-10-12-per-box-edits-reread-compare.md](features/FC-00042-2026-10-12-per-box-edits-reread-compare.md) | Per-box edit tracking; re-read shows values side by side |
-| FC-00043 | 2026-10-12 | M | Medium | approved | [features/FC-00043-2026-10-12-merge-split-rows.md](features/FC-00043-2026-10-12-merge-split-rows.md) | Merge and split review rows by hand |
+| FC-00043 | 2026-10-12 | M | Medium | done | [features/FC-00043-2026-10-12-merge-split-rows.md](features/FC-00043-2026-10-12-merge-split-rows.md) | Merge and split review rows by hand |

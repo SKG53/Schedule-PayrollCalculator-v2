@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00042 (2026-10-12).
+Feature Card since — last updated FC-00043 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -120,8 +120,9 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    sub-tabs plus "Unrecognized"; inline edit of name (dropdown of schedule names),
    date, up to 3 punch pairs (text inputs, `845` → `8:45 AM` on blur; the table's
    horizontal/vertical scroll position survives every commit re-render); flag pills;
-   per-row / per-employee / per-entity approve & unapprove; "Ignore Time Cards" per
-   employee; manual row add (entity-level and employee-level). Import/export of the
+   per-row / per-employee / per-entity approve & unapprove; tick boxes with **Merge
+   rows…** (preview first) and **⇹ Split** on multi-pair rows (FC-00043); "Ignore Time
+   Cards" per employee; manual row add (entity-level and employee-level). Import/export of the
    Actuals Intake .xlsx (round-trip) and PDF (record only).
 3. **Payroll** — per-entity sub-tabs. Mandatory break bar (minutes + explicit
    Confirm; unconfirmed shows orange and export asks to confirm). Weekly Actuals
