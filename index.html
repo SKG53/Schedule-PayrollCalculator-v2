@@ -316,6 +316,14 @@ table.review .mini-btn.approve{background:rgba(22,163,74,0.08);color:var(--green
 table.review .mini-btn.approve:hover{background:rgba(22,163,74,0.16)}
 table.review .mini-btn.reject{color:var(--red)}
 table.review td.low-conf{background:rgba(217,119,6,0.08)}
+/* FC-00038: settings import preview */
+.stage-sec{margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:6px 10px}
+.stage-sec summary{cursor:pointer;font-weight:700;font-size:13px;padding:4px 0}
+.stage-sec.stage-block{border-color:#FCA5A5;background:#FEF2F2}
+.stage-sec.stage-block summary{color:var(--red)}
+#stageBody label{display:inline;text-transform:none;letter-spacing:0;font-weight:400;font-size:12px;color:var(--text);margin:0}
+#stageBody .btn[disabled]{opacity:0.45;cursor:not-allowed;transform:none}
+.stage-your-edit{display:inline-block;padding:1px 6px;border-radius:999px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;font-size:10px;font-weight:600;white-space:nowrap}
 /* FC-00043: merge bar */
 .merge-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--text2)}
 .merge-bar .btn{font-size:11px;padding:4px 10px}
@@ -559,6 +567,14 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2>History</h2><button class="btn" onclick="closeHistory()">Close</button></div>
     <p class="sub">Big actions can be undone as a whole. Every single change below can be reverted on its own; a revert is added as its own line and nothing after it is removed.</p>
     <div id="historyBody"></div>
+  </div>
+</div>
+
+<!-- ===== SETTINGS IMPORT PREVIEW (FC-00038) ===== -->
+<div id="stageOverlay" class="overlay" style="display:none">
+  <div class="overlay-panel history-panel">
+    <h2>Settings import — preview</h2>
+    <div id="stageBody"></div>
   </div>
 </div>
 
@@ -826,6 +842,9 @@ function _resolveEntityCode(name){
 function _syncEntityCode(ent){ent.code=_resolveEntityCode(ent.name);return ent.code}
 let _testMode=false;
 function setTestMode(v){_testMode=!!v}
+// FC-00038: true while a settings preview runs the importer against a copy of the session
+// (no toasts, alerts or renders); _importing marks log lines written by a settings import.
+let _simulating=false,_importing=false;
 function _isUserIntentStore(name){return['wageRates','wageBlank','payMethod','splitAmounts','flatWages','breakOverrides','rosterActive','rosterAliases','payrollSortMode','entityPalettes'].includes(name)}
 function _guardedStore(name){
   const obj={};
@@ -861,6 +880,7 @@ function createSession(){
     rosterAliases:_guardedStore('rosterAliases'),
     flatWages:_guardedStore('flatWages'),
     flatWagesDisplayNames:{},
+    pendingSettings:[], // FC-00038: settings rows waiting for an entity that is not loaded yet
     toolSettings:{}, // FC-00041: owner-level settings (thresholds, labels); defaults in TOOL_SETTING_DEFAULTS
     _dispatching:false
   };
@@ -1440,6 +1460,7 @@ function _nextLogEntry(change){
   const seq=++session.seq;
   const e=Object.assign({id:'l'+seq,seq,t:Date.now()-session.startedAt,reverted:false},change);
   if(_cpTag)e.cp=_cpTag; // FC-00039: written by a checkpointed action itself
+  if(_importing)e.screen='settings-import'; // FC-00038: tells imports apart from hand edits
   return e;
 }
 function _applyChange(entry,invert){
@@ -1590,6 +1611,7 @@ function _captureState(){
     empIdSeq:_cloneState(session._empIdSeq||null),
     fileIdMax:_cloneState(session._fileIdMax||null),
     toolSettings:_cloneState(session.toolSettings||{}),
+    pendingSettings:_cloneState(session.pendingSettings||[]),
     stores:{},
     startedAt:session.startedAt,
     ui:{nextEntityId,activeEntityIdx,activePayrollEntityIdx,activePayrollSubTab:_cloneState(activePayrollSubTab),currentTab,currentView,flagView,activeEmp}
@@ -1633,6 +1655,7 @@ function _restoreState(st,opts){
   if(st.empIdSeq)session._empIdSeq=st.empIdSeq;else delete session._empIdSeq;
   if(st.fileIdMax)session._fileIdMax=st.fileIdMax;else delete session._fileIdMax;
   session.toolSettings=st.toolSettings?st.toolSettings:{};
+  session.pendingSettings=st.pendingSettings?st.pendingSettings:[];
   _withSessionMutation(()=>{_STORE_NAMES.forEach(n=>_refill(session[n],st.stores[n]));});
   const u=st.ui||{};
   nextEntityId=u.nextEntityId!=null?u.nextEntityId:nextEntityId;
@@ -1922,7 +1945,7 @@ function _historyHtml(){
 function renderHistoryPanel(){const b=document.getElementById('historyBody');if(b)b.innerHTML=_historyHtml();}
 function openHistory(){_historyOpen=true;document.getElementById('historyOverlay').style.display='flex';renderHistoryPanel();}
 function closeHistory(){_historyOpen=false;document.getElementById('historyOverlay').style.display='none';}
-function _refreshHistoryIfOpen(){if(_historyOpen)renderHistoryPanel();}
+function _refreshHistoryIfOpen(){if(_historyOpen&&!_simulating)renderHistoryPanel();}
 
 // ================================================================
 // FC-00037 — session snapshot: save the whole session to one file, open it later
@@ -2232,7 +2255,7 @@ function _stashLive(){
   return{entities:entities.slice(),byId:Object.assign({},session.roster.byId),keyToId:Object.assign({},session.roster.keyToId),
     log:session.log.slice(),seq:session.seq,startedAt:session.startedAt,sessAd:session.actualDays.slice(),adRef:actualDays,adItems:actualDays.slice(),
     rounding:Object.assign({},session.roundingFactors),fwdn:Object.assign({},session.flatWagesDisplayNames),
-    empIdSeq:session._empIdSeq,fileIdMax:session._fileIdMax,toolSettings:session.toolSettings,stores,
+    empIdSeq:session._empIdSeq,fileIdMax:session._fileIdMax,toolSettings:session.toolSettings,pendingSettings:session.pendingSettings,stores,
     ui:{nextEntityId,activeEntityIdx,activePayrollEntityIdx,currentTab,currentView,flagView,activeEmp},apst:Object.assign({},activePayrollSubTab)};
 }
 function _unstashLive(s){
@@ -2245,7 +2268,7 @@ function _unstashLive(s){
   _refill(session.roundingFactors,s.rounding);_refill(session.flatWagesDisplayNames,s.fwdn);
   if(s.empIdSeq)session._empIdSeq=s.empIdSeq;else delete session._empIdSeq;
   if(s.fileIdMax)session._fileIdMax=s.fileIdMax;else delete session._fileIdMax;
-  session.toolSettings=s.toolSettings;
+  session.toolSettings=s.toolSettings;session.pendingSettings=s.pendingSettings;
   _withSessionMutation(()=>{_STORE_NAMES.forEach(n=>_refill(session[n],s.stores[n]));});
   ({nextEntityId,activeEntityIdx,activePayrollEntityIdx,currentTab,currentView,flagView,activeEmp}=s.ui);
   _refill(activePayrollSubTab,s.apst);
@@ -2608,6 +2631,266 @@ function confirmMerge(){
   if(!p)return null;
   return mergeRows(p.idx,p.ids);
 }
+
+// ================================================================
+// FC-00038 — staged settings import: show what a settings file would change, apply on click
+// ================================================================
+// The preview runs the real importer against a copy of the session (swapped in for one
+// synchronous step, live objects put straight back), so what it shows is exactly what Apply
+// will do — FC-00036 identity rules included. Nothing in the session changes until Apply.
+let _staged=null;
+function _simulate(fn){
+  const stash=_stashLive();
+  const prev=_simulating;_simulating=true;
+  let result,after;
+  try{
+    _restoreState(_captureState(),{ui:true});
+    result=fn();
+    after=_captureState();
+  }finally{
+    _simulating=prev;
+    _unstashLive(stash);
+  }
+  return{result,after};
+}
+function _rowCell(row,colMap,...keys){for(const k of keys){const i=colMap[k];if(i!=null&&i>=0&&row[i]!=null)return String(row[i]).trim();}return'';}
+// Builds the staging model. rows: data rows (header removed); colMap: lowercased header -> index.
+function stageSettingsData(rows,colMap,includeBreaks,toolRows,label,opts){
+  const list=[];
+  (rows||[]).forEach((row,i)=>{
+    if(!row||!row.length)return;
+    const entityName=_rowCell(row,colMap,'entity'),empName=_rowCell(row,colMap,'employee');
+    if(!entityName&&!empName)return;
+    list.push({i,row,entityName,empName,id:_rowCell(row,colMap,'employee id','employeeid','employee_id')});
+  });
+  _staged={rows:list,colMap,includeBreaks:!!includeBreaks,toolRows:toolRows||[],label:label||'settings file',skip:new Set(),entityChoice:{},pendingEntry:(opts&&opts.pendingEntry)||null,preview:null};
+  _staged.preview=_computeStagePreview();
+  _renderStageOverlay(true);
+  return _staged;
+}
+function _entityKnown(name){return entities.some(e=>(e.name||'').toLowerCase().trim()===(name||'').toLowerCase().trim()&&(name||'').trim());}
+function _rowsToApply(){
+  if(!_staged)return[];
+  return _staged.rows.filter(r=>!_staged.skip.has(r.i)&&_entityKnown(r.entityName));
+}
+function _personFields(st,id,includeBreaks){
+  const S=st.stores,rec=st.roster.byId[id]||{};
+  const sp=S.splitAmounts[id];
+  const f={rate:S.wageBlank[id]?'(blank)':(typeof S.wageRates[id]==='number'?S.wageRates[id]:null),type:typeof S.flatWages[id]==='number'?'Flat':'Hourly',
+    flat:typeof S.flatWages[id]==='number'?S.flatWages[id]:null,method:S.payMethod[id]||'deposit',deposit:sp?sp.deposit:null,typedAs:sp?(sp.isWhole?'whole':'decimal'):null,
+    active:S.rosterActive[id]!==false,aliases:(S.rosterAliases[id]||[]).join(', '),notes:rec.notes||'',finalPass:rec.final_pass_method||''};
+  if(includeBreaks)for(let d=0;d<7;d++){const v=S.breakOverrides[id+'|'+d];f['break'+d]=v==null?'Actual':v;}
+  return f;
+}
+const _STAGE_FIELD_LABEL={rate:'Rate',type:'Type',flat:'Flat amount',method:'Pay method',deposit:'Deposit amount',typedAs:'Deposit typed as',active:'Active',aliases:'Aliases',notes:'Notes',finalPass:'Final pass method',palette:'Palette',defaultBreak:'Default break (min)'};
+for(let d=0;d<7;d++)_STAGE_FIELD_LABEL['break'+d]=DAY_SHORT[d]+' break';
+// Which session log types count as a hand edit of each preview field.
+function _handEditedFields(id){
+  const out=new Set();
+  session.log.forEach(e=>{
+    if(e.reverted||e.screen==='settings-import'||!e.target||e.target.id!==id)return;
+    const t=e.type,f=e.target.field;
+    if(t==='wage'||t==='wageBlank')out.add('rate');
+    else if(t==='flatWage'){out.add('flat');out.add('type');}
+    else if(t==='payMethod')out.add('method');
+    else if(t==='splitDeposit'){out.add('deposit');out.add('typedAs');}
+    else if(t==='rosterActiveSet')out.add('active');
+    else if(t==='rosterAliasAdd'||t==='rosterAliasRemove'||(t==='rosterFieldSet'&&f==='aliases'))out.add('aliases');
+    else if(t==='rosterFieldSet'&&f==='notes')out.add('notes');
+    else if(t==='rosterFieldSet'&&f==='final_pass_method')out.add('finalPass');
+    else if(t==='breakOverride')out.add('break'+e.target.day);
+  });
+  return out;
+}
+function _fmtStageVal(k,v){
+  if(v===null||v===undefined||v==='')return'(none)';
+  if(k==='rate'||k==='flat'||k==='deposit')return typeof v==='number'?'$'+v.toFixed(2):String(v);
+  if(k==='method')return _WOW_METHOD[v]||v;
+  if(k==='active')return v?'Yes':'No';
+  if(/^break\d$/.test(k))return typeof v==='number'?v+' min':String(v);
+  return String(v);
+}
+function _computeStagePreview(){
+  const st=_staged;
+  const before=_captureState();
+  const rows=_rowsToApply();
+  const sim=_simulate(()=>{
+    _importing=true;
+    try{
+      const rep=_ingestPayrollSettings(rows.map(r=>r.row),st.colMap,st.includeBreaks);
+      _ingestToolSettings(st.toolRows);
+      return rep;
+    }finally{_importing=false;}
+  });
+  const after=sim.after,report=sim.result||{aliasRejects:[]};
+  const B=before.roster.byId,A=after.roster.byId;
+  const entName=id=>{const e=after.entities.find(x=>x.id===id)||before.entities.find(x=>x.id===id);return e?(e.name||''):'';};
+  // Which record each file row landed on.
+  const rowRec=new Map();
+  rows.forEach(r=>{
+    const ent=after.entities.find(e=>(e.name||'').toLowerCase().trim()===r.entityName.toLowerCase().trim());
+    let id=r.id&&A[r.id]?r.id:null;
+    if(!id&&ent)id=after.roster.keyToId[_rosterKey(ent.id,r.empName)]||null;
+    rowRec.set(r.i,id);
+  });
+  const touched=new Set([...rowRec.values()].filter(Boolean));
+  // Identity changes (FC-00036): records moved to another ID, folded into a file person, or
+  // renamed. A session name is followed to wherever it resolves after the import.
+  const identity=[],explained=new Set();
+  const resolveAfter=(entId,name)=>{
+    const k=after.roster.keyToId[_rosterKey(entId,name)];if(k&&A[k])return k;
+    const n=_aliasNorm(name);
+    return Object.keys(A).find(x=>A[x].entity===entId&&((A[x].aliases||[]).some(a=>_aliasNorm(a)===n)||(A[x].former_names||[]).some(a=>_aliasNorm(a)===n)))||null;
+  };
+  Object.keys(B).forEach(id=>{
+    const b=B[id];
+    const to=resolveAfter(b.entity,b.canonical_name);
+    if(to&&to!==id){
+      const same=_aliasNorm(A[to].canonical_name)===_aliasNorm(b.canonical_name);
+      identity.push({kind:same?'moved':'merged',entity:entName(b.entity),name:b.canonical_name,from:id,to,
+        text:same?('"'+b.canonical_name+'" moves from '+id+' to '+to+(A[to].canonical_name!==b.canonical_name?' as "'+A[to].canonical_name+'"':'')):('"'+b.canonical_name+'" becomes the file\'s '+A[to].canonical_name+' · '+id+' → '+to)});
+      explained.add(to);
+    }else if(!A[id]){
+      identity.push({kind:'removed',entity:entName(b.entity),name:b.canonical_name,from:id,to:null,text:'"'+b.canonical_name+'" ('+id+') is folded into another record'});
+    }else if(A[id].canonical_name!==b.canonical_name){
+      const norm=_aliasNorm(A[id].canonical_name)===_aliasNorm(b.canonical_name);
+      identity.push({kind:norm?'normalized':'renamed',entity:entName(b.entity),name:A[id].canonical_name,from:id,to:id,text:(norm?'Name written as in the file: ':'Renamed: ')+b.canonical_name+' → '+A[id].canonical_name+' ('+id+')'});
+    }
+  });
+  // Field changes, new people, unchanged.
+  const changes=[],added=[],unchanged=[];
+  const seen=new Set();
+  rows.forEach(r=>{
+    const id=rowRec.get(r.i);if(!id||seen.has(id))return;seen.add(id);
+    const mapped=identity.find(x=>x.to===id&&x.from!==id);
+    // The session record this person was before the import (it may have had another ID).
+    const prevId=mapped?mapped.from:(B[id]&&resolveAfter(B[id].entity,B[id].canonical_name)===id?id:null);
+    if(!prevId){added.push({row:r.i,id,entity:r.entityName,name:A[id].canonical_name,fields:_personFields(after,id,st.includeBreaks)});return;}
+    const fb=_personFields(before,prevId||id,st.includeBreaks),fa=_personFields(after,id,st.includeBreaks);
+    const hand=_handEditedFields(prevId||id);
+    const diffs=Object.keys(fa).filter(k=>JSON.stringify(fb[k])!==JSON.stringify(fa[k])).map(k=>({field:k,label:_STAGE_FIELD_LABEL[k]||k,from:_fmtStageVal(k,fb[k]),to:_fmtStageVal(k,fa[k]),yourEdit:hand.has(k)}));
+    const idChange=identity.some(x=>x.to===id||x.from===id);
+    if(diffs.length)changes.push({row:r.i,id,entity:r.entityName,name:A[id].canonical_name,diffs});
+    else if(!idChange)unchanged.push({row:r.i,id,entity:r.entityName,name:A[id].canonical_name});
+  });
+  // Entity-level: palette and default break.
+  after.entities.forEach(ea=>{
+    const eb=before.entities.find(x=>x.id===ea.id);if(!eb)return;
+    const diffs=[];
+    const pb=before.stores.entityPalettes[ea.id],pa=after.stores.entityPalettes[ea.id];
+    if((pb||null)!==(pa||null))diffs.push({field:'palette',label:'Palette',from:pb||'(default)',to:pa||'(default)',yourEdit:session.log.some(e=>!e.reverted&&e.type==='entityPaletteSet'&&e.screen!=='settings-import'&&e.target&&e.target.entity===ea.id)});
+    if(eb.breakMinutes!==ea.breakMinutes)diffs.push({field:'defaultBreak',label:'Default break (min)',from:String(eb.breakMinutes||0),to:String(ea.breakMinutes||0),yourEdit:session.log.some(e=>!e.reverted&&e.type==='entityBreak'&&e.screen!=='settings-import'&&e.target&&e.target.entity===ea.id)});
+    if(diffs.length)changes.push({row:null,id:'',entity:ea.name||'',name:'(entity)',diffs});
+  });
+  // Tool settings (thresholds).
+  const tdiffs=Object.keys(TOOL_SETTING_DEFAULTS).filter(k=>{const a=(after.toolSettings||{})[k],b=(before.toolSettings||{})[k];return a!==undefined&&a!==b;})
+    .map(k=>({field:k,label:TOOL_SETTING_LABELS[k],from:String(getToolSetting(k)),to:String(after.toolSettings[k]),yourEdit:session.log.some(e=>!e.reverted&&e.type==='toolSetting'&&e.screen!=='settings'&&e.target&&e.target.field===k)}));
+  if(tdiffs.length)changes.push({row:null,id:'',entity:'',name:'(tool settings)',diffs:tdiffs});
+  // Not in file: session people of the file's entities the file does not mention.
+  const fileEnts=new Set(rows.map(r=>r.entityName.toLowerCase().trim()));
+  const notInFile=Object.values(B).filter(b=>{
+    const en=entName(b.entity).toLowerCase().trim();
+    const now=resolveAfter(b.entity,b.canonical_name)||(A[b.id]?b.id:null);
+    return fileEnts.has(en)&&now&&!touched.has(now);
+  }).map(b=>({id:resolveAfter(b.entity,b.canonical_name)||b.id,entity:entName(b.entity),name:b.canonical_name}));
+  // Blocking (computed on the whole file, skipped rows included so they stay listed).
+  const blocking=[];
+  const byId={};
+  st.rows.forEach(r=>{if(r.id)(byId[r.id]=byId[r.id]||[]).push(r);});
+  Object.keys(byId).forEach(id=>{if(byId[id].length>1)byId[id].forEach(r=>blocking.push({row:r.i,entity:r.entityName,name:r.empName,reason:'ID '+id+' appears '+byId[id].length+' times in the file'}));});
+  st.rows.forEach(r=>{
+    const b=r.id&&B[r.id];
+    if(b&&b.fromFile&&_aliasNorm(b.canonical_name)!==_aliasNorm(r.empName)){
+      const known=[...(b.aliases||[]),...(b.former_names||[])].some(a=>_aliasNorm(a)===_aliasNorm(r.empName));
+      if(!known)blocking.push({row:r.i,entity:r.entityName,name:r.empName,reason:'ID '+r.id+' is '+b.canonical_name+' in this session'});
+    }
+  });
+  (report.aliasRejectRows||[]).forEach(a=>{
+    const r=rows.find(x=>x.entityName.toLowerCase().trim()===(a.entity||'').toLowerCase().trim()&&_aliasNorm(x.empName)===_aliasNorm(a.empName));
+    if(r)blocking.push({row:r.i,entity:r.entityName,name:r.empName,reason:'Alias refused: '+a.reasons.join('; ')});
+  });
+  const unknownEnts={};
+  st.rows.forEach(r=>{if(r.entityName&&!_entityKnown(r.entityName)){const k=r.entityName.toLowerCase().trim();(unknownEnts[k]=unknownEnts[k]||{name:r.entityName,rows:[]}).rows.push(r.i);}});
+  const unresolved=blocking.filter(b=>!st.skip.has(b.row)).length+Object.keys(unknownEnts).filter(k=>!st.entityChoice[k]).length;
+  st.simAfter=after; // kept for checks: what Apply is expected to produce
+  return{changes,identity,added,notInFile,blocking,unknownEntities:Object.values(unknownEnts),unchanged,unresolved};
+}
+function stageSkipRow(i,on){if(!_staged)return;if(on)_staged.skip.add(i);else _staged.skip.delete(i);_staged.preview=_computeStagePreview();_renderStageOverlay();}
+function stageEntityChoice(name,choice){if(!_staged)return;_staged.entityChoice[(name||'').toLowerCase().trim()]=choice==='pending'?'pending':'skip';_staged.preview=_computeStagePreview();_renderStageOverlay();}
+function cancelStagedSettings(){
+  if(_staged&&_staged.pendingEntry){/* stays pending; offered again next time */}
+  _staged=null;_renderStageOverlay(false);
+}
+function applyStagedSettings(){
+  const st=_staged;if(!st)return false;
+  const pv=_computeStagePreview();
+  if(pv.unresolved>0){showToast('Resolve the red rows first: skip them, or choose what to do with the unknown entity.','err');st.preview=pv;_renderStageOverlay();return false;}
+  const rows=_rowsToApply();
+  const pend={};
+  st.rows.forEach(r=>{const k=r.entityName.toLowerCase().trim();if(!st.skip.has(r.i)&&!_entityKnown(r.entityName)&&st.entityChoice[k]==='pending')(pend[k]=pend[k]||{entityName:r.entityName,rows:[]}).rows.push(r.row);});
+  _withCheckpoint('Settings import · '+st.label,()=>{
+    if(rows.length||st.toolRows.length){
+      _importing=true;
+      try{_ingestPayrollSettings(rows.map(r=>r.row),st.colMap,st.includeBreaks);_ingestToolSettings(st.toolRows);}
+      finally{_importing=false;}
+    }
+    if(!session.pendingSettings)session.pendingSettings=[];
+    if(st.pendingEntry){const i=session.pendingSettings.indexOf(st.pendingEntry);if(i>=0)session.pendingSettings.splice(i,1);}
+    Object.values(pend).forEach(p=>session.pendingSettings.push({entityName:p.entityName,rows:_cloneState(p.rows),colMap:Object.assign({},st.colMap),includeBreaks:st.includeBreaks,label:st.label}));
+  });
+  _staged=null;_renderStageOverlay(false);
+  _rerenderAll();
+  const np=Object.keys(pend).length;
+  if(np)showToast('Saved for later: settings for '+Object.values(pend).map(p=>p.entityName).join(', ')+' apply when that entity is added','ok');
+  return true;
+}
+// Settings waiting for an entity that was not loaded at import time. Offered through the same
+// preview as soon as an entity with that name exists.
+function pendingSettings(){return(session.pendingSettings||[]).map(p=>({entityName:p.entityName,rows:p.rows.length,label:p.label}));}
+function checkPendingSettings(){
+  if(_staged||_simulating)return null;
+  const p=(session.pendingSettings||[]).find(x=>_entityKnown(x.entityName));
+  if(!p)return null;
+  return stageSettingsData(p.rows,p.colMap,p.includeBreaks,[],p.label+' (waiting for '+p.entityName+')',{pendingEntry:p});
+}
+function skipPendingSettings(){
+  if(!_staged||!_staged.pendingEntry)return;
+  const p=_staged.pendingEntry;
+  _withCheckpoint('Drop waiting settings · '+p.entityName,()=>{const i=(session.pendingSettings||[]).indexOf(p);if(i>=0)session.pendingSettings.splice(i,1);});
+  _staged=null;_renderStageOverlay(false);
+}
+// ---- Preview UI ----
+function _stageHtml(){
+  const st=_staged;if(!st)return'';
+  const pv=st.preview;
+  const sec=(title,cls,inner,n)=>`<details class="stage-sec ${cls}" ${cls==='stage-unchanged'?'':'open'}><summary>${escHtml(title)} <span class="wow-n">${n}</span></summary>${inner}</details>`;
+  let h=`<p class="sub">${escHtml(st.label)}${st.includeBreaks?' · with breaks':''}. Nothing below has been applied yet.</p>`;
+  if(pv.blocking.length||pv.unknownEntities.length){
+    let inner='<table class="history-table"><tbody>';
+    pv.blocking.forEach(b=>{inner+=`<tr><td>${escHtml(b.entity)}</td><td>${escHtml(b.name)}</td><td>${escHtml(b.reason)}</td><td class="act"><label style="white-space:nowrap"><input type="checkbox" style="width:auto" ${st.skip.has(b.row)?'checked':''} onchange="stageSkipRow(${b.row},this.checked)"> skip this row</label></td></tr>`;});
+    pv.unknownEntities.forEach(u=>{const k=u.name.toLowerCase().trim(),c=st.entityChoice[k];
+      inner+=`<tr><td>${escHtml(u.name)}</td><td>${u.rows.length} row${u.rows.length===1?'':'s'}</td><td>No entity with this name is loaded</td><td class="act" style="white-space:nowrap"><label><input type="radio" style="width:auto" name="ue_${escHtml(k)}" ${c==='pending'?'checked':''} onchange="stageEntityChoice('${escJs(u.name)}','pending')"> keep for when it is added</label> <label><input type="radio" style="width:auto" name="ue_${escHtml(k)}" ${c==='skip'?'checked':''} onchange="stageEntityChoice('${escJs(u.name)}','skip')"> skip</label></td></tr>`;});
+    h+=sec('Needs a decision','stage-block',inner+'</tbody></table>',pv.blocking.length+pv.unknownEntities.length);
+  }
+  if(pv.changes.length){
+    let inner='<table class="history-table"><thead><tr><th>Entity</th><th>Employee</th><th>Field</th><th>Now → File</th><th></th></tr></thead><tbody>';
+    pv.changes.forEach(c=>c.diffs.forEach((d,j)=>{inner+=`<tr><td>${j?'':escHtml(c.entity)}</td><td>${j?'':escHtml(c.name)}</td><td>${escHtml(d.label)}</td><td class="chg">${escHtml(d.from)} → <b>${escHtml(d.to)}</b></td><td>${d.yourEdit?'<span class="stage-your-edit" title="You changed this by hand in this session; Apply overwrites it">your edit</span>':''}</td></tr>`;}));
+    h+=sec('Changes','stage-changes',inner+'</tbody></table>',pv.changes.reduce((s,c)=>s+c.diffs.length,0));
+  }
+  if(pv.identity.length)h+=sec('Identity changes','stage-identity','<table class="history-table"><tbody>'+pv.identity.map(x=>`<tr><td>${escHtml(x.entity)}</td><td>${escHtml(x.name)}</td><td>${escHtml(x.text)}</td></tr>`).join('')+'</tbody></table>',pv.identity.length);
+  if(pv.added.length)h+=sec('New','stage-new','<table class="history-table"><tbody>'+pv.added.map(a=>`<tr><td>${escHtml(a.entity)}</td><td>${escHtml(a.name)}</td><td class="mono">${escHtml(a.id)}</td><td>${escHtml(_fmtStageVal('rate',a.fields.rate))} · ${escHtml(_fmtStageVal('method',a.fields.method))}${a.fields.active?'':' · inactive'}</td></tr>`).join('')+'</tbody></table>',pv.added.length);
+  if(pv.notInFile.length)h+=sec('Not in file (left as they are)','stage-notin','<table class="history-table"><tbody>'+pv.notInFile.map(a=>`<tr><td>${escHtml(a.entity)}</td><td>${escHtml(a.name)}</td><td class="mono">${escHtml(a.id)}</td></tr>`).join('')+'</tbody></table>',pv.notInFile.length);
+  if(pv.unchanged.length)h+=sec('Unchanged','stage-unchanged','<div class="history-empty">'+pv.unchanged.map(u=>escHtml(u.name)).join(', ')+'</div>',pv.unchanged.length);
+  const block=pv.unresolved>0;
+  h+=`<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;align-items:center">${block?'<span style="color:var(--red);font-size:12px">Resolve the red rows to enable Apply</span>':''}${st.pendingEntry?'<button class="btn" onclick="skipPendingSettings()">Drop these waiting settings</button>':''}<button class="btn" onclick="cancelStagedSettings()">Cancel</button><button class="btn btn-primary" ${block?'disabled':''} onclick="applyStagedSettings()">Apply</button></div>`;
+  return h;
+}
+function _renderStageOverlay(open){
+  const ov=document.getElementById('stageOverlay');if(!ov)return;
+  if(open===false||!_staged){ov.style.display='none';return;}
+  document.getElementById('stageBody').innerHTML=_stageHtml();
+  ov.style.display='flex';
+}
 function recompute(opts){
   const idx=entities.findIndex(e=>e.id===(opts&&opts.entity));
   if(idx<0)return null;
@@ -2794,7 +3077,7 @@ function onEntityNameInput(val){
   _syncEntityCode(entities[activeEntityIdx]);
   renderEntityTabBar();
 }
-function onEntityNameChange(val){entities[activeEntityIdx].name=val.trim();_syncEntityCode(entities[activeEntityIdx]);renderEntityTabBar();}
+function onEntityNameChange(val){entities[activeEntityIdx].name=val.trim();_syncEntityCode(entities[activeEntityIdx]);renderEntityTabBar();checkPendingSettings();}
 
 function renderScheduleContent(){
   const ent=entities[activeEntityIdx];
@@ -2903,7 +3186,9 @@ function handleFile(file){
 
 // FC-00039: every schedule load (Excel, paste, schedule OCR) is undoable as one step.
 function parseSchedule(rows,idx){
-  return _withCheckpoint('Schedule load · '+(_entLabel(idx)||'entity'),()=>_parseScheduleImpl(rows,idx));
+  const out=_withCheckpoint('Schedule load · '+(_entLabel(idx)||'entity'),()=>_parseScheduleImpl(rows,idx));
+  checkPendingSettings(); // FC-00038: settings waiting for this entity are offered now
+  return out;
 }
 function _parseScheduleImpl(rows,idx){
   let headerRow=-1,colMap={};
@@ -4839,6 +5124,7 @@ function getAutoEscalate(){return _prefGet('pv26_auto_escalate')==='1'}
 // Toast notification
 let _toastTimer=null;
 function showToast(msg,kind,ms){
+  if(_simulating)return;
   const t=document.getElementById('toast');if(!t)return;
   const icon=kind==='err'?'✕':'✓';
   t.innerHTML='<span class="icon">'+icon+'</span>'+msg.replace(/</g,'&lt;');
@@ -7258,7 +7544,7 @@ function setEntityPalette(entId,presetName){
   if(!ent||!FC14_PRESETS[presetName])return;
   dispatch({type:'entityPaletteSet',screen:'payroll',target:{kind:'entity',entity:entId,field:'palette'},from:getEntityPalette(ent),to:presetName});
   const idx=entities.indexOf(ent);
-  if(idx>=0)renderPayrollEntityContent(idx);
+  if(idx>=0&&!_simulating)renderPayrollEntityContent(idx);
 }
 // ---- FC-00019: custom palette picker (replaces the native <select>) ----
 // ARGB ('FFRRGGBB') -> CSS '#RRGGBB', dropping the alpha byte. Small top-level helper so
@@ -8236,7 +8522,8 @@ function importPayrollSettingsFile(file,includeBreaks){
       // break state stays untouched. This is the safety mechanism the user asked for.
       const tsName=wb.SheetNames.find(n=>/tool\s*settings/i.test(n));
       const tsRows=tsName?XLSX.utils.sheet_to_json(wb.Sheets[tsName],{header:1,defval:'',raw:false}).slice(1):[];
-      _withCheckpoint('Settings import · '+(file.name||'file'),()=>{_ingestPayrollSettings(data.slice(headerRow+1),colMap,!!includeBreaks);_ingestToolSettings(tsRows);});
+      // FC-00038: show what the file would change; nothing is applied until Apply.
+      stageSettingsData(data.slice(headerRow+1),colMap,!!includeBreaks,tsRows,file.name||'settings file');
     }catch(err){alert('Error reading file: '+err.message);}
   };
   reader.readAsArrayBuffer(file);
@@ -8256,7 +8543,7 @@ function _ingestPayrollSettings(rows,colMap,includeBreaks){
   let updated=0,skipped=0,unmatchedEntities=new Set();
   // Aliases refused as ambiguous. Reported rather than swallowed — a bad alias silently
   // routes one person's punches to another.
-  const aliasRejects=[];
+  const aliasRejects=[],aliasRejectRows=[];
   // Track which entities had their default break adjusted so we apply once per entity
   // (multiple rows share the same Default Break column for the same entity).
   const defaultBreaksApplied=new Set();
@@ -8318,7 +8605,7 @@ function _ingestPayrollSettings(rows,colMap,includeBreaks){
         });
       });
       const res=setAliases(ent.id,empName,list);
-      if(res.rejected.length)aliasRejects.push(`${empName}: ${res.rejected.map(r=>r.reason).join('; ')}`);
+      if(res.rejected.length){aliasRejects.push(`${empName}: ${res.rejected.map(r=>r.reason).join('; ')}`);aliasRejectRows.push({entity:entityName,empName,reasons:res.rejected.map(r=>r.alias+' — '+r.reason)});}
     }
     if(colMap['final pass method']!=null){
       setFinalPassMethod(ent.id,empName,get(row,'final pass method').trim());
@@ -8415,14 +8702,15 @@ function _ingestPayrollSettings(rows,colMap,includeBreaks){
   // another case, an alias) becomes that file person — one ID, one canonical name.
   let mergedCount=0;
   touchedEntities.forEach(entId=>{mergedCount+=_mergeProvisionalRecords(entId);_renumberProvisionalIds(entId);});
-  if(currentTab==='payroll')renderPayroll();
+  if(currentTab==='payroll'&&!_simulating)renderPayroll();
   let msg=`Imported settings for ${updated} employee${updated===1?'':'s'}`;
   if(mergedCount>0)msg+=` · ${mergedCount} name${mergedCount===1?'':'s'} matched to existing employees`;
   if(skipped>0)msg+=` · ${skipped} skipped`;
   if(unmatchedEntities.size>0)msg+=` · unmatched entities: ${[...unmatchedEntities].join(', ')}`;
   if(aliasRejects.length>0)msg+=` · ${aliasRejects.length} alias${aliasRejects.length===1?'':'es'} refused`;
   showToast(msg,(unmatchedEntities.size>0||aliasRejects.length>0)?'err':'ok');
-  if(aliasRejects.length>0)alert('These aliases were not imported because they are ambiguous:\n\n'+aliasRejects.join('\n'));
+  if(aliasRejects.length>0&&!_simulating)alert('These aliases were not imported because they are ambiguous:\n\n'+aliasRejects.join('\n'));
+  return{updated,skipped,mergedCount,unmatchedEntities:[...unmatchedEntities],aliasRejectRows};
 }
 
 

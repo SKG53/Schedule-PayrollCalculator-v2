@@ -67,6 +67,8 @@ test('test_checkpoint_before_each_big_action', async () => {
   api.rereadChooseAll(row.id, 'reread');
   api.applyReread(row.id);
   api.importPayrollSettingsFile(settingsFile(api, [['Undo Co', 'Ann', '15', 'Hourly', 'Cash']]), false);
+  assert.equal(api.getCheckpoints().length, 4, 'FC-00038: the file is only staged; Apply is the big action');
+  api.applyStagedSettings();
   api.clearIntake(0);
   api.switchEntity(1);
   api.removeEntity();

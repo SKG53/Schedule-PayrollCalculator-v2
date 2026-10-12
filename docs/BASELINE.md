@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00043 (2026-10-12).
+Feature Card since — last updated FC-00038 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -133,6 +133,8 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    Rounded Final / Diff, plus a per-day break override row per employee). Sort toggle:
    schedule order vs pay-type grouping (Cash → Deposit+Cash → Deposit). All-entity
    preview table mirroring the export. 12 export buttons + settings export/import.
+   Settings import opens a **preview** first (FC-00038): changes, identity changes, new,
+   not in file, unchanged and red rows to decide; nothing applies until Apply.
    Below them, **Since last week** (FC-00041): load last week's snapshot to list new /
    missing people, setting changes, hours or pay swings and entity totals (read-only).
    Below it, the read-only *Combined export preview* (FC-00013) has a "Make editable
