@@ -1074,10 +1074,15 @@ function _recordForAlias(entId,name){
 // The name a person should carry everywhere: the roster's canonical name when the given
 // spelling is that person (same name in another case/punctuation, an alias, or a former
 // name); otherwise the spelling as given, trimmed.
+// Finds the person a name belongs to in the same order ensureRosterRecord (and so pay) uses —
+// own name, then a former name, then an alias — without ever creating an ID.
+function _resolveRecordNoMint(entId,name){
+  return _recordForKey(entId,name)||_recordForFormerName(entId,name)||_recordForAlias(entId,name);
+}
 function _canonicalNameFor(entId,name){
   const raw=(name||'').toString().trim();
   if(!raw)return raw;
-  const rec=_recordForKey(entId,raw)||_recordForAlias(entId,raw)||_recordForFormerName(entId,raw);
+  const rec=_resolveRecordNoMint(entId,raw);
   return rec&&rec.canonical_name?rec.canonical_name:raw;
 }
 // FC-00036: folds a record minted this session (provisional) into the settings-file record
@@ -2283,7 +2288,7 @@ function _toolSettingsRows(){
   Object.keys(session.toolSettings||{}).filter(k=>k.startsWith('label:')).sort().forEach(k=>rows.push([_toolSettingLabel(k),session.toolSettings[k]]));
   // FC-00045: name display, written as words a person can read and edit.
   const nk=Object.keys(session.toolSettings||{}).filter(k=>k.startsWith('names:'));
-  ['names:scope','names:all',...NAME_EXPORT_KEYS.map(k=>'names:'+k)].filter(k=>nk.includes(k)).forEach(k=>rows.push([_toolSettingLabel(k),_nameSettingValueText(k,session.toolSettings[k])]));
+  ['names:scope','names:all',...NAME_EXPORT_KEYS.map(k=>'names:'+k)].filter(k=>nk.includes(k)&&session.toolSettings[k]).forEach(k=>rows.push([_toolSettingLabel(k),_nameSettingValueText(k,session.toolSettings[k])]));
   return rows;
 }
 // rows: [[label,value],…] from the settings file's Tool Settings sheet. Unknown labels are ignored.
@@ -3136,7 +3141,7 @@ function setExportNameMode(key,v){if(!NAME_MODE_LABEL[v])return;setToolSetting('
 function _refreshNameViews(){if(_simulating)return;renderDownloadsPanel();if(currentTab==='payroll')renderPayroll();}
 // The saved name under the person's permanent ID (resolution only, never mints an ID).
 function _savedNameFor(entId,empName){
-  const rec=_recordForKey(entId,empName)||_recordForAlias(entId,empName)||_recordForFormerName(entId,empName);
+  const rec=_resolveRecordNoMint(entId,empName); // same person pay uses (review fix)
   return(rec&&rec.canonical_name)||(empName||'');
 }
 function _firstWord(n){return String(n||'').trim().split(/\s+/)[0]||''}

@@ -149,3 +149,15 @@ test('test_pay_and_ids_unchanged', async () => {
   const f1 = JSON.stringify(api.__lastExcelWorkbook.worksheets[0].rows.map(r => (r || []).slice(3).map(c => c && c.value)));
   assert.equal(f1, f0, 'every column after the name is identical, formulas included');
 });
+
+test('test_printed_name_is_the_person_who_is_paid', async () => {
+  // A punch spelled with one person's former name that is also another person's alias:
+  // pay goes to the former-name owner, so the printed name must be theirs too.
+  const api = setup();
+  api.renameEmployeeViaDispatcher(0, 'Avery Stone', 'Averill Stone', 'payroll');
+  api.setAliases(0, 'Averill Stone', []);
+  api.setAliases(0, 'Avery Tobin', ['Avery Stone']);
+  const paidId = api.wKey(0, 'Avery Stone');
+  const fmt = api._makeNameFormatter('payroll');
+  assert.equal(api.session.roster.byId[paidId].canonical_name, fmt(0, 'Avery Stone'));
+});

@@ -38,11 +38,11 @@ Fully reversible via one revert commit.
 ## Built
 - Downloads panel, top: "Names on exports: ○ Same for all [As saved ▾] ○ Per export". With Per export, each of the seven export lines gets its own "Names" dropdown; an export without its own choice follows the "all" choice.
 - One formatter (`_makeNameFormatter`) is used by every pay report through `_columnsFor` (Excel, PDF and the Combined preview, so the editable copy follows too), by the all-entity preview and by the manager report. The Full report's sections use the Full report's choice.
-- The saved name is looked up by permanent ID without creating one; a name with no record prints as it arrived, formatted the same way.
+- The saved name is looked up without creating an ID, in the same order pay uses (own name, then former name, then alias), so a printed name is always the person who is paid. An independent review found that the first version used a different order; the schedule's own name lookup (`_canonicalNameFor`) now uses the same order too. A name with no record prints as it arrived, formatted the same way.
 - Tool Settings sheet rows: "Names on exports · same or per export" (Same for all / Per export), "Names on exports · all exports" and "Names on exports · <export>" (As saved / FIRST LAST / FIRST), written in words and read back from the file. The settings preview (FC-00038) shows them in words too.
 
 ## Verification
-- `npm test`: 286 pass (279 + 7 new).
+- `npm test`: 287 pass (279 + 8 new).
 - Five real weeks, every export kind (six pay reports and three manager reports): cell values identical to the live version in "As saved". In FIRST and FIRST LAST: every name in capitals, no two printed names alike within an entity.
 - Real browser (Chromium, real jsPDF): Per export with FIRST on the payroll report; the preview and the PDF both print "AVERY S.", "AVERY T.", "BRAM". No console errors.
 
@@ -56,7 +56,7 @@ Changing saved names (renames work as today). Name display on screens other than
 None.
 
 ## Tests
-`tests/fc00045_export_name_display.test.js` — `test_three_options_format_names`, `test_first_only_disambiguates_within_entity`, `test_same_for_all_vs_per_export_toggle`, `test_settings_and_timecards_keep_saved_names`, `test_flat_label_kept_and_unrecognized_names_follow_option`, `test_choice_saved_in_settings_file_and_snapshot`, `test_pay_and_ids_unchanged`
+`tests/fc00045_export_name_display.test.js` — `test_three_options_format_names`, `test_first_only_disambiguates_within_entity`, `test_same_for_all_vs_per_export_toggle`, `test_settings_and_timecards_keep_saved_names`, `test_flat_label_kept_and_unrecognized_names_follow_option`, `test_choice_saved_in_settings_file_and_snapshot`, `test_pay_and_ids_unchanged`, `test_printed_name_is_the_person_who_is_paid`
 
 ## Slice
 M
