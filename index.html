@@ -1032,7 +1032,9 @@ function ensureRosterRecord(entId,empName,existingId){
     session.roster.byId[id]=rec;
   }
   rec.entity=entId;
-  if(canonical&&(!rec.canonical_name||_aliasNorm(rec.canonical_name)===_aliasNorm(canonical)))rec.canonical_name=canonical;
+  // FC-00044: a name the settings file gave keeps the file's spelling; the same name arriving
+  // in other capitals or punctuation (schedule, timecards, a screen refresh) only resolves to it.
+  if(canonical&&(!rec.canonical_name||(_aliasNorm(rec.canonical_name)===_aliasNorm(canonical)&&!rec.fromFile)))rec.canonical_name=canonical;
   else if(canonical&&_aliasNorm(rec.canonical_name)!==_aliasNorm(canonical)){
     // Known id arriving under a different name (e.g. a settings file carrying a rename):
     // same identity, new label — carry every name-keyed reference over with it.
@@ -1536,7 +1538,7 @@ function _applyChange(entry,invert){
       rosterAliases[rec.id]=aliases;
       rec.aliases=aliases.slice();
       _noteFormerName(rec,fromName,toName);
-      _propagateEmployeeRename(entId,fromName,toName);
+      _propagateEmployeeRename(entId,fromName,toName,{exact:_aliasNorm(fromName)===_aliasNorm(toName)});
     }else if(entry.type==='rosterAliasAdd'){
       const aliases=(rosterAliases[key]||[]).slice();
       if(value&&!aliases.some(a=>_aliasNorm(a)===_aliasNorm(value)))aliases.push(value);
@@ -8794,6 +8796,9 @@ function _ingestPayrollSettings(rows,colMap,includeBreaks){
     const importedRecord=ensureRosterRecord(ent.id,empName,employeeIdRaw);
     // FC-00036: this record is now defined by the settings file (permanent ID).
     importedRecord.fromFile=true;
+    // FC-00044: the file's spelling becomes the saved spelling, also when only capitals or
+    // punctuation differ from what the session had. Screens follow at the end of the import.
+    if(empName&&importedRecord.canonical_name!==empName&&_aliasNorm(importedRecord.canonical_name)===_aliasNorm(empName))importedRecord.canonical_name=empName;
     touchedEntities.add(ent.id);
     const k=importedRecord.id;
     const wageRaw=money(get(row,'wage/hour','wage'));

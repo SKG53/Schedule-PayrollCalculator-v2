@@ -1,6 +1,6 @@
 # FC-00044 — A name from the settings file keeps its spelling
 
-**Date:** 2026-10-12 · **Slice:** S · **Risk:** Medium · **Status:** approved · **Affected entities:** All
+**Date:** 2026-10-12 · **Slice:** S · **Risk:** Medium · **Status:** done · **Affected entities:** All
 
 ## What
 When the settings (master) file gives a person's name, that spelling stays. A schedule, timecard or screen refresh that spells the same name in other capitals or punctuation ("QUILL" for "Quill") no longer rewrites the saved name. Deliberate renames still work.
@@ -26,6 +26,17 @@ Fully reversible via one revert commit.
 3. A person not yet in any settings file keeps today's behavior.
 4. Deliberate renames still win: a rename in the tool (click the name) or a different name in a later settings file changes the saved name, and the next downloaded settings file carries it.
 5. IDs, aliases, matching and every pay figure on the five real weeks are unchanged.
+
+## Built
+- Cause: during a settings import, the Palette column re-renders the Payroll screen; that render looked people up by the schedule's spelling and the lookup re-wrote the saved name to it. The end-of-import pass then copied that spelling everywhere.
+- `ensureRosterRecord` no longer re-writes the saved name of a person who came from a settings file when a name arrives that differs only in capitals or punctuation; it only finds them.
+- The importer writes the file's spelling as the saved name, also when only the capitals differ from the session (a later file can change capitals). The existing end-of-import pass then rewrites the schedule, timecard rows and actuals to that spelling.
+- A rename in the tool still refuses a change of capitals only (FC-00007 rule); change capitals in the settings file.
+
+## Verification
+- `npm test`: 279 pass (273 + 6 new). `test_schedule_caps_do_not_rewrite_file_name` fails on the code before this card.
+- Real master settings file on the five real weeks (schedules and timecards loaded first): every saved name now equals the file's spelling, and the state after Apply equals the preview exactly, letter case included. Before this card two names drifted.
+- Five real weeks: hours and pay identical to the live version; undo and snapshot round-trips exact.
 
 ## Out of scope
 Changing which names count as the same person. The name-display options on exports (FC-00045).
