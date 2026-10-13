@@ -1,7 +1,7 @@
 # Functionality Baseline
 
 **Status: complete as of 2026-08-03, commit 8dbb955** (branch `tool-v2`); kept current by every
-Feature Card since — last updated FC-00045 (2026-10-12).
+Feature Card since — last updated FC-00048 (2026-10-12).
 **Reconciled against the v2 docs** (`CLAUDE.md`, `docs/DOMAIN.md`) the same day —
 see the note at the head of §10.
 
@@ -108,7 +108,9 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    and is undoable). Upload
    .xlsx schedule or start blank; edit shifts inline (`6:45AM - 2:15PM` / `OFF`,
    overnight supported); set new week start date (headers recalc); Employee/Manager
-   view toggle (manager adds per-day hours rows); info chips (weekly hours per
+   view toggle (manager adds per-day hours rows); at the top, "Load last week's settings
+   file" (FC-00047): prompts until a file is loaded or skipped, opens the file's entities,
+   same preview and Apply as the Payroll tab; info chips (weekly hours per
    employee, >40h highlighted); calendar view with per-hour staffing counts
    (warn threshold: ≥4 before 4:30 PM, ≥5 after — hard-coded, NOT the domain's
    3-minimum coverage rule); flags panel (see §6). Exports: Employee Schedule,
@@ -117,12 +119,18 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    EasyClocking screenshots, Mixed/Auto-Classify. Run OCR (Gemini; concurrency 3,
    auto-retry 3 attempts with 12 s delay, per-file retry buttons, optional
    auto-escalate to Pro below 75% confidence). Review table split into per-employee
-   sub-tabs plus "Unrecognized"; inline edit of name (dropdown of schedule names),
+   sub-tabs plus "Unrecognized"; inline edit of name (dropdown of schedule names, confirmed people not on the
+   schedule marked "(not on schedule)", and "+ New employee…"; picking a person saves the
+   card's spelling to them, FC-00047),
    date, up to 3 punch pairs (text inputs, `845` → `8:45 AM` on blur; the table's
    horizontal/vertical scroll position survives every commit re-render); flag pills;
    per-row / per-employee / per-entity approve & unapprove; tick boxes with **Merge
    rows…** (preview first) and **⇹ Split** on multi-pair rows (FC-00043); "Ignore Time
-   Cards" per employee; manual row add (entity-level and employee-level). Import/export of the
+   Cards" per employee; manual row add (entity-level and employee-level). Rows, tabs and
+   payroll follow the person (alternate spelling, former name, suggestion), not only the
+   exact spelling (FC-00046). Unrecognized lists each OCR name with "Add as new employee",
+   or "Matches archived" + Reactivate (FC-00047/48); a confirmed person not on the schedule
+   gets a "(not on schedule)" tab. Import/export of the
    Actuals Intake .xlsx (round-trip) and PDF (record only).
 3. **Payroll** — per-entity sub-tabs. Mandatory break bar (minutes + explicit
    Confirm; unconfirmed shows orange and export asks to confirm). Weekly Actuals
@@ -134,7 +142,11 @@ Header: **Undo <last big action>** (FC-00039), **Save snapshot** / **Open snapsh
    schedule order vs pay-type grouping (Cash → Deposit+Cash → Deposit). All-entity
    preview table mirroring the export. 12 export buttons + settings export/import.
    Settings import opens a **preview** first (FC-00038): changes, identity changes, new,
-   not in file, unchanged and red rows to decide; nothing applies until Apply.
+   not in file, unchanged and red rows to decide; nothing applies until Apply. Applied
+   late, it matches the session's people to the file's (FC-00046); archived-but-worked
+   people and match conflicts are listed in red. IDs the tool made itself show "ID
+   pending" until a settings file is loaded. A missing rate on an hourly person with
+   hours is a red cell and a "Rate missing" export status line (FC-00048).
    Below them, **Since last week** (FC-00041): load last week's snapshot to list new /
    missing people, setting changes, hours or pay swings and entity totals (read-only).
    At the bottom, **Downloads** (FC-00040): every export on one list with format ticks,

@@ -110,7 +110,9 @@ test('test_flat_label_kept_and_unrecognized_names_follow_option', async () => {
   api.syncActualsFromReview();
   api.setExportNameMode('all', 'firstLast');
   const names = await printed(api);
-  assert.ok(names.includes('OZZIE ROOK (orphan)'), names.join(' | '));
+  // FC-00048: the word "orphan" no longer prints on exports.
+  assert.ok(names.includes('OZZIE ROOK'), names.join(' | '));
+  assert.ok(!names.some(n => /orphan/i.test(n)), names.join(' | '));
   assert.ok(names.includes('WREN (flat)'));
 });
 

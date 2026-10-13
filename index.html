@@ -714,6 +714,8 @@ table.review tr.new-since-upload td{background:rgba(250,204,21,0.08)}
       <button class="btn" id="removeEntityBtn" style="display:none;color:var(--red)" onclick="removeEntity()">Remove</button>
     </div>
 
+    <!-- FC-00047: load last week's settings file first -->
+    <div id="settingsFirstBar"></div>
     <p class="sub" id="subtitle">Upload last week's schedule to get started</p>
 
     <div class="upload-zone" id="dropZone">
@@ -1016,6 +1018,9 @@ function ensureRosterRecord(entId,empName,existingId){
   const canonical=(empName||'').toString().trim();
   const key=_rosterKey(entId,canonical);
   const fileId=existingId&&(OLD_EMP_ID_RE.test(existingId)||NEW_EMP_ID_RE.test(existingId))?existingId:null;
+  // FC-00046: a lookup with no name (an unnamed review row, an empty cell) is nobody. It gets a
+  // throwaway record that is never stored, so it never takes an ID or shows up as a blank person.
+  if(!canonical&&!fileId)return{id:'',canonical_name:'',entity:entId,aliases:[],rate:null,pay_method:'deposit',final_pass_method:'',deposit_amount:null,flat_amount:null,active:true,notes:'',_transient:true};
   if(fileId&&NEW_EMP_ID_RE.test(fileId)){
     _noteSeenEmployeeId(fileId);
     // FC-00036: a record minted earlier this session (schedule loaded before the settings
@@ -1031,6 +1036,10 @@ function ensureRosterRecord(entId,empName,existingId){
   if(!id&&canonical){const prev=_recordForFormerName(entId,canonical);if(prev)return prev;}
   // FC-00036: a registered alias resolves to its person too (resolution only).
   if(!id&&canonical){const viaAlias=_recordForAlias(entId,canonical);if(viaAlias)return viaAlias;}
+  // FC-00046: a one-word name that is the first name of exactly one active settings-file person
+  // is that person (resolution only), so a first-name schedule loaded after the file never mints
+  // a second record for them.
+  if(!id&&canonical){const viaFirst=_recordForFirstName(entId,canonical);if(viaFirst)return viaFirst;}
   if(!id)id=_mintEmployeeId(entId);
   let rec=session.roster.byId[id];
   if(!rec){
@@ -1077,7 +1086,51 @@ function _recordForAlias(entId,name){
 // Finds the person a name belongs to in the same order ensureRosterRecord (and so pay) uses —
 // own name, then a former name, then an alias — without ever creating an ID.
 function _resolveRecordNoMint(entId,name){
-  return _recordForKey(entId,name)||_recordForFormerName(entId,name)||_recordForAlias(entId,name);
+  return _recordForKey(entId,name)||_recordForFormerName(entId,name)||_recordForAlias(entId,name)||_recordForFirstName(entId,name);
+}
+function _recordForFirstName(entId,name){
+  const n=_aliasNorm(name);
+  if(!n||n.indexOf(' ')>=0)return null;
+  const fileRecs=Object.keys(session.roster.byId).map(id=>session.roster.byId[id]).filter(r=>r&&r.entity===entId&&r.fromFile);
+  return fileRecs.length?_uniqueFirstNameFileRec(fileRecs,n):null;
+}
+// FC-00046: the name a timecard spelling should carry on this entity's screens and payroll —
+// the schedule entry that is the same roster person (same spelling, or the person reached through
+// an alternate spelling or former name), else that person's saved name when they are off the
+// schedule, else ''. Never creates an ID.
+function _personNameOnEntity(ent,name){
+  const raw=(name||'').toString().trim();
+  if(!ent||!raw)return'';
+  const schedNames=(ent.employees||[]).map(e=>e&&e.name).filter(Boolean);
+  const low=raw.toLowerCase();
+  const exact=schedNames.find(s=>s.toLowerCase().trim()===low);
+  if(exact)return exact;
+  const rec=_resolveRecordNoMint(ent.id,raw);
+  if(!rec||!rec.canonical_name)return'';
+  if(rosterActive[rec.id]===false&&!schedNames.some(s=>_aliasNorm(s)===_aliasNorm(rec.canonical_name)))return''; // FC-00047
+  const onSched=schedNames.find(s=>_resolveRecordNoMint(ent.id,s)===rec);
+  return onSched||rec.canonical_name;
+}
+// FC-00048: a person the owner has confirmed (in a settings file, or added with "Add as new
+// employee") who is not on this week's schedule: their saved name, else ''. Archived excluded.
+function _registeredOffSchedule(ent,name){
+  const raw=(name||'').toString().trim();
+  if(!ent||!raw)return'';
+  const rec=_resolveRecordNoMint(ent.id,raw);
+  if(!rec||!rec.canonical_name||rosterActive[rec.id]===false||!(rec.fromFile||rec.addedNew))return'';
+  if((ent.employees||[]).some(e=>e&&_aliasNorm(e.name)===_aliasNorm(rec.canonical_name)))return'';
+  return rec.canonical_name;
+}
+function _registeredOffScheduleList(ent){
+  if(!ent)return[];
+  const sched=new Set((ent.employees||[]).map(e=>_aliasNorm(e&&e.name)));
+  return Object.keys(session.roster.byId).map(id=>session.roster.byId[id])
+    .filter(r=>r&&r.entity===ent.id&&r.canonical_name&&rosterActive[r.id]!==false&&(r.fromFile||r.addedNew)&&!sched.has(_aliasNorm(r.canonical_name)))
+    .map(r=>r.canonical_name).sort((a,b)=>a.localeCompare(b));
+}
+function _schedNameForPerson(ent,name){
+  const n=_personNameOnEntity(ent,name);
+  return n&&(ent.employees||[]).some(e=>e&&e.name===n)?n:'';
 }
 function _canonicalNameFor(entId,name){
   const raw=(name||'').toString().trim();
@@ -1114,17 +1167,81 @@ function _mergeRecordInto(p,t){
   });
   _propagateEmployeeRename(t.entity,p.canonical_name,t.canonical_name,{exact:true});
 }
-function _mergeProvisionalRecords(entId){
+// FC-00046: removes this entity's roster records that have no name, did not come from a file and
+// carry no rate, pay method, split, flat wage, alias, override or active flag.
+function _dropBlankRecords(entId){
+  let n=0;
+  Object.keys(session.roster.byId).forEach(id=>{
+    const r=session.roster.byId[id];
+    if(!r||r.entity!==entId||r.fromFile||(r.canonical_name||'').trim())return;
+    const used=ROSTER_KEYED_STORES().some(s=>s&&(Object.prototype.hasOwnProperty.call(s,id)||(s===breakOverrides&&Object.keys(s).some(k=>k.indexOf(id+'|')===0))));
+    if(used)return;
+    _withSessionMutation(()=>{
+      delete session.roster.byId[id];
+      Object.keys(session.roster.keyToId).forEach(k=>{if(session.roster.keyToId[k]===id)delete session.roster.keyToId[k];});
+    });
+    n++;
+  });
+  return n;
+}
+// FC-00046: which settings-file person a session-made record is — same name, an alternate
+// spelling, a former name, or (last) a one-word name equal to the first name of exactly one file
+// person of the entity. Null when nothing matches.
+function _fileMatchTier(p,fileRecs){
+  const n=_aliasNorm(p.canonical_name);
+  if(!n)return null;
+  let hit=fileRecs.find(f=>_aliasNorm(f.canonical_name)===n);
+  if(hit)return{rec:hit,tier:0};
+  hit=fileRecs.find(f=>(rosterAliases[f.id]||[]).some(a=>_aliasNorm(a)===n))
+    ||fileRecs.find(f=>(f.former_names||[]).some(a=>_aliasNorm(a)===n));
+  if(hit)return{rec:hit,tier:1};
+  // First-name fold: never for someone the owner added as new, never onto an archived person.
+  if(p.addedNew)return null;
+  const byFirst=_uniqueFirstNameFileRec(fileRecs,n);
+  return byFirst?{rec:byFirst,tier:2}:null;
+}
+// The one active settings-file person whose first name is this one-word name, else null.
+function _uniqueFirstNameFileRec(fileRecs,n){
+  if(!n||n.indexOf(' ')>=0)return null;
+  const byFirst=fileRecs.filter(f=>f.fromFile&&rosterActive[f.id]!==false&&_aliasNorm(f.canonical_name).indexOf(' ')>0&&_aliasNorm(f.canonical_name).split(' ')[0]===n);
+  return byFirst.length===1?byFirst[0]:null;
+}
+function _fileMatchFor(p,fileRecs){const m=_fileMatchTier(p,fileRecs);return m?m.rec:null;}
+// A session record that carries something: it is on a schedule, was added as new, or holds a
+// rate, pay method, split, flat wage, alias, override or active flag.
+function _recordInUse(rec){
+  if(!rec)return false;
+  if(rec.addedNew)return true;
+  const id=rec.id;
+  if(ROSTER_KEYED_STORES().some(s=>s&&(Object.prototype.hasOwnProperty.call(s,id)||(s===breakOverrides&&Object.keys(s).some(k=>k.indexOf(id+'|')===0)))))return true;
+  const ent=entities.find(e=>e.id===rec.entity);
+  const n=_aliasNorm(rec.canonical_name);
+  return !!(ent&&n&&(ent.employees||[]).some(e=>e&&_aliasNorm(e.name)===n));
+}
+function _mergeProvisionalRecords(entId,report){
   const recs=Object.keys(session.roster.byId).map(id=>session.roster.byId[id]).filter(r=>r&&r.entity===entId);
   const fileRecs=recs.filter(r=>r.fromFile);
   let merged=0;
-  recs.filter(r=>!r.fromFile).forEach(p=>{
-    const n=_aliasNorm(p.canonical_name);
-    if(!n)return;
-    const t=fileRecs.find(f=>_aliasNorm(f.canonical_name)===n)
-      ||fileRecs.find(f=>(rosterAliases[f.id]||[]).some(a=>_aliasNorm(a)===n))
-      ||fileRecs.find(f=>(f.former_names||[]).some(a=>_aliasNorm(a)===n));
-    if(t){_mergeRecordInto(p,t);merged++;}
+  // Two session people in use that both match one file person at the same strength are never
+  // folded together by the tool: they stay separate and are reported, and merging stays a manual
+  // action (FC-00043). A single strongest match (same name beats alternate spelling beats first
+  // name) is merged and the weaker ones are reported. Records that carry nothing (a spelling the
+  // tool looked up once) fold into the file person.
+  const byTarget=new Map();
+  recs.filter(r=>!r.fromFile).forEach(p=>{const m=_fileMatchTier(p,fileRecs);if(m){if(!byTarget.has(m.rec))byTarget.set(m.rec,[]);byTarget.get(m.rec).push({p,tier:m.tier});}});
+  byTarget.forEach((ms,t)=>{
+    const used=ms.filter(m=>_recordInUse(m.p)),idle=ms.filter(m=>!_recordInUse(m.p));
+    let take=null,rest=[];
+    if(used.length<=1)take=used[0]||null;
+    else{
+      const best=Math.min(...used.map(m=>m.tier));
+      const top=used.filter(m=>m.tier===best);
+      if(top.length===1){take=top[0];rest=used.filter(m=>m!==take);}
+      else rest=used;
+    }
+    if(rest.length&&report)(report.conflicts=report.conflicts||[]).push({entity:entId,file:t.canonical_name,id:t.id,session:rest.concat(take?[take]:[]).map(m=>m.p.canonical_name),matched:take?take.p.canonical_name:'',separate:rest.map(m=>m.p.canonical_name)});
+    if(take){_mergeRecordInto(take.p,t);merged++;}
+    if(take||!rest.length)idle.forEach(m=>{_mergeRecordInto(m.p,t);merged++;});
   });
   // Same person, different spelling of the canonical name in schedule/actuals/intake.
   fileRecs.forEach(f=>_propagateEmployeeRename(entId,f.canonical_name,f.canonical_name,{exact:true}));
@@ -1156,7 +1273,9 @@ function _propagateEmployeeRename(entId,fromName,toName,opts){
   if(entNorm)(actualDays||[]).forEach(d=>{if(d&&_aliasNorm(d.entityName)===entNorm&&hit(d.empName))d.empName=toName;});
   const intake=ent.intake;
   if(intake){
-    (intake.reviewRows||[]).forEach(r=>{if(r&&hit(r.empName))r.empName=toName;});
+    // FC-00046: the fuzzy suggestion a review row carries is a name too — left on the old
+    // spelling it points at nobody after a rename, and the row's punches fall off the schedule.
+    (intake.reviewRows||[]).forEach(r=>{if(!r)return;if(hit(r.empName))r.empName=toName;if(r._suggestedName&&hit(r._suggestedName))r._suggestedName=toName;});
     if(intake.activeEmpTab&&hit(intake.activeEmpTab))intake.activeEmpTab=toName;
     if(intake.ignoredEmployees){
       Object.keys(intake.ignoredEmployees).forEach(k=>{
@@ -1260,7 +1379,7 @@ function _dupBannerHtml(){
 }
 // "Name \u00b7 EMP_XXX_NNNNN" suffix for non-table displays (headings, flag lists, alerts).
 function _nameWithId(entId,empName){
-  const id=_employeeIdFor(entId,empName);
+  const id=_empIdText(entId,empName);
   return `${empName||'(unnamed)'} \u00b7 ${id}`;
 }
 // Shared inline-rename flow used by every click-to-edit entry point and the Roster panel
@@ -1320,6 +1439,16 @@ function _fc7StartNameEdit(uid){
 function _recordForId(id){return session.roster.byId[id]||null}
 function _recordForKey(entId,empName){return session.roster.byId[session.roster.keyToId[_rosterKey(entId,empName)]]||null}
 function _employeeIdFor(entId,empName){return ensureRosterRecord(entId,empName).id}
+// FC-00046: before any settings file is loaded for an entity, the IDs the session hands out are
+// placeholders — a late settings file may renumber them — so screens say "ID pending" instead of
+// showing a number that looks permanent. Exported settings files and snapshots still carry the
+// number, and once that file is loaded (next week) the ID is permanent. Display only: nothing
+// in the session changes.
+function _isIdPending(rec){
+  if(!rec||!rec.id||rec.fromFile)return false;
+  return(session._fileIdMax||{})[_entityCodeFor(rec.entity)]==null;
+}
+function _empIdText(entId,empName){const rec=ensureRosterRecord(entId,empName);return rec.id?(_isIdPending(rec)?'ID pending':rec.id):'';}
 function _applyRecordMirror(entId,empName,field,value){
   const rec=ensureRosterRecord(entId,empName);
   if(field==='rate')rec.rate=value;
@@ -1384,6 +1513,62 @@ function setAliases(entId,empName,list){
   dispatch({type:'rosterFieldSet',screen:'payroll',target:{kind:'employee',entity:entId,id:k,field:'aliases'},from:getAliases(entId,empName),to:out,meta:{empName}});
   return{applied:out,rejected};
 }
+// FC-00047: a spelling the owner matched to a person by hand becomes that person's alternate
+// spelling (same entity only), so next week the same spelling lands on them without a click and
+// the next exported settings file carries it. Refused quietly when the spelling is someone
+// else's name or alias. Returns true when a spelling was added.
+function _learnSpelling(ent,personName,spelling){
+  const sp=(spelling||'').toString().trim();
+  if(!ent||!personName||!sp)return false;
+  const rec=_resolveRecordNoMint(ent.id,personName);
+  if(!rec||!rec.canonical_name)return false;
+  const n=_aliasNorm(sp);
+  if(n===_aliasNorm(rec.canonical_name))return false;
+  const cur=(rosterAliases[rec.id]||[]).slice();
+  if(cur.some(a=>_aliasNorm(a)===n))return false;
+  const clash=Object.keys(session.roster.byId).map(id=>session.roster.byId[id]).filter(o=>o&&o!==rec&&o.entity===ent.id&&_aliasNorm(o.canonical_name)===n);
+  // A record the tool made for this spelling when it looked it up (payroll render, status check)
+  // carries nothing and is not a person: it is removed. A real person with that name blocks.
+  if(clash.some(o=>o.fromFile||_recordInUse(o)))return false;
+  if(!validateAlias(ent.id,rec.canonical_name,sp,null).ok&&!clash.length)return false;
+  clash.forEach(o=>_withSessionMutation(()=>{
+    delete session.roster.byId[o.id];
+    Object.keys(session.roster.keyToId).forEach(k=>{if(session.roster.keyToId[k]===o.id)delete session.roster.keyToId[k];});
+  }));
+  if(clash.length&&!validateAlias(ent.id,rec.canonical_name,sp,null).ok)return false;
+  dispatch({type:'rosterFieldSet',screen:'intake',target:{kind:'employee',entity:ent.id,id:rec.id,field:'aliases'},from:cur,to:cur.concat([sp]),meta:{empName:rec.canonical_name,learned:true}});
+  return true;
+}
+// FC-00047: removes a spelling learned from a review row when the owner moves that row to someone
+// else and no other row still carries the spelling. Returns true when removed.
+function _unlearnSpelling(ent,recId,spelling,exceptRow){
+  const rec=session.roster.byId[recId];
+  const n=_aliasNorm(spelling);
+  if(!ent||!rec||!n)return false;
+  const cur=(rosterAliases[rec.id]||[]).slice();
+  if(!cur.some(a=>_aliasNorm(a)===n))return false;
+  if(((ent.intake&&ent.intake.reviewRows)||[]).some(r=>r&&r!==exceptRow&&_aliasNorm(r.empName)===n))return false;
+  dispatch({type:'rosterFieldSet',screen:'intake',target:{kind:'employee',entity:ent.id,id:rec.id,field:'aliases'},from:cur,to:cur.filter(a=>_aliasNorm(a)!==n),meta:{empName:rec.canonical_name,unlearned:true}});
+  return true;
+}
+// FC-00047: a spelling is learned for a person only when no other review row read with that
+// spelling currently sits on someone else — the alias would silently move those rows.
+function _spellingSafeToLearn(ent,personName,spelling,exceptRow){
+  const n=_aliasNorm(spelling);
+  const target=_resolveRecordNoMint(ent.id,personName);
+  if(!n||!target)return false;
+  return!((ent.intake&&ent.intake.reviewRows)||[]).some(r=>{
+    if(!r||r===exceptRow||_aliasNorm(r.empName)!==n)return false;
+    const k=reviewBucketKey(r,ent);
+    return k!=='__unrecognized__'&&_resolveRecordNoMint(ent.id,k)!==target;
+  });
+}
+// FC-00047: archived people are never matched automatically. Returns the archived person a
+// spelling belongs to (own name, alternate spelling, former name), or null.
+function _archivedMatch(entId,name){
+  const rec=_resolveRecordNoMint(entId,name);
+  return rec&&rec.canonical_name&&rosterActive[rec.id]===false?rec:null;
+}
 // Resolves an observed name to a canonical schedule name via the alias table, or null.
 function resolveAlias(entId,name){
   const n=_aliasNorm(name);
@@ -1391,6 +1576,7 @@ function resolveAlias(entId,name){
   for(const k in rosterAliases){
     const rec=_recordForId(k);
     if(!rec||rec.entity!==entId)continue;
+    if(rosterActive[k]===false)continue; // FC-00047: archived people are not matched automatically
     if((rosterAliases[k]||[]).some(x=>_aliasNorm(x)===n))return rec.canonical_name;
   }
   return null;
@@ -1728,7 +1914,7 @@ function _actionRunning(){
 }
 function _entLabel(idx){const e=entities[idx];return e?(e.name||('Entity '+(idx+1))):''}
 function _checkpoint(label,meta){
-  const state=_captureState();
+  const state=meta&&meta.beforeState?meta.beforeState:_captureState();
   const cp={id:'cp'+(++_cpSeq),label,at:Date.now(),state,parts:meta&&meta.restoreUi?_snapshotPartsData():null,beforeSig:_stateSig(state),beforeSeq:session.seq,afterSeq:null,afterSig:null,meta:meta||{}};
   _checkpoints.push(cp);
   if(_checkpoints.length>CHECKPOINT_LIMIT)_checkpoints.splice(0,_checkpoints.length-CHECKPOINT_LIMIT);
@@ -2741,7 +2927,7 @@ function stageSettingsData(rows,colMap,includeBreaks,toolRows,label,opts){
     if(!entityName&&!empName)return;
     list.push({i,row,entityName,empName,id:_rowCell(row,colMap,'employee id','employeeid','employee_id')});
   });
-  _staged={rows:list,colMap,includeBreaks:!!includeBreaks,toolRows:toolRows||[],label:label||'settings file',skip:new Set(),entityChoice:{},pendingEntry:(opts&&opts.pendingEntry)||null,preview:null};
+  _staged={rows:list,colMap,includeBreaks:!!includeBreaks,toolRows:toolRows||[],label:label||'settings file',skip:new Set(),entityChoice:{},pendingEntry:(opts&&opts.pendingEntry)||null,openedEntities:(opts&&opts.openedEntities)||[],preview:null};
   _staged.preview=_computeStagePreview();
   _renderStageOverlay(true);
   return _staged;
@@ -2892,13 +3078,19 @@ function _computeStagePreview(){
   st.rows.forEach(r=>{if(r.entityName&&!_entityKnown(r.entityName)){const k=r.entityName.toLowerCase().trim();(unknownEnts[k]=unknownEnts[k]||{name:r.entityName,rows:[]}).rows.push(r.i);}});
   const unresolved=blocking.filter(b=>!st.skip.has(b.row)).length+Object.keys(unknownEnts).filter(k=>!st.entityChoice[k]).length;
   st.simAfter=after; // kept for checks: what Apply is expected to produce
-  return{changes,identity,added,notInFile,blocking,unknownEntities:Object.values(unknownEnts),unchanged,unresolved};
+  // FC-00046: people the file archives but who worked this week (kept active and paid), and
+  // session people the tool would not fold together because more than one match one file person.
+  const archivedWorked=(report.archivedWorked||[]).slice();
+  const conflicts=(report.conflicts||[]).map(c=>({entity:entName(c.entity),file:c.file,id:c.id,session:c.session,matched:c.matched||'',separate:c.separate||c.session}));
+  return{changes,identity,added,notInFile,blocking,unknownEntities:Object.values(unknownEnts),unchanged,unresolved,archivedWorked,conflicts};
 }
 function stageSkipRow(i,on){if(!_staged)return;if(on)_staged.skip.add(i);else _staged.skip.delete(i);_staged.preview=_computeStagePreview();_renderStageOverlay();}
 function stageEntityChoice(name,choice){if(!_staged)return;_staged.entityChoice[(name||'').toLowerCase().trim()]=choice==='pending'?'pending':'skip';_staged.preview=_computeStagePreview();_renderStageOverlay();}
 function cancelStagedSettings(){
   if(_staged&&_staged.pendingEntry){/* stays pending; offered again next time */}
+  const opened=_staged?_staged.openedEntities:[];
   _staged=null;_renderStageOverlay(false);
+  if(opened&&opened.length)_closeOpenedEntities(opened); // FC-00047: Cancel leaves no empty entities behind
 }
 function applyStagedSettings(){
   const st=_staged;if(!st)return false;
@@ -2907,6 +3099,17 @@ function applyStagedSettings(){
   const rows=_rowsToApply();
   const pend={};
   st.rows.forEach(r=>{const k=r.entityName.toLowerCase().trim();if(!st.skip.has(r.i)&&!_entityKnown(r.entityName)&&st.entityChoice[k]==='pending')(pend[k]=pend[k]||{entityName:r.entityName,rows:[]}).rows.push(r.row);});
+  // FC-00047: entities the file opened from the Schedules tab are part of this step — undo closes them.
+  let beforeState=null;
+  const opened=st.openedEntities||[];
+  if(opened.length){
+    beforeState=_captureState();
+    beforeState.entities=beforeState.entities.filter(e=>{const d=opened.find(x=>x.id===e.id);return!d||d.reused;})
+      .map(e=>{const d=opened.find(x=>x.id===e.id);if(d){e.name='';e.code='';}return e;});
+    if(opened[0].nextIdBefore!=null)beforeState.ui.nextEntityId=opened[0].nextIdBefore;
+    beforeState.ui.activeEntityIdx=Math.min(beforeState.ui.activeEntityIdx,beforeState.entities.length-1);
+    beforeState.ui.activePayrollEntityIdx=Math.min(beforeState.ui.activePayrollEntityIdx,beforeState.entities.length-1);
+  }
   _withCheckpoint('Settings import · '+st.label,()=>{
     if(rows.length||st.toolRows.length){
       _importing=true;
@@ -2916,7 +3119,7 @@ function applyStagedSettings(){
     if(!session.pendingSettings)session.pendingSettings=[];
     if(st.pendingEntry){const i=session.pendingSettings.indexOf(st.pendingEntry);if(i>=0)session.pendingSettings.splice(i,1);}
     Object.values(pend).forEach(p=>session.pendingSettings.push({entityName:p.entityName,rows:_cloneState(p.rows),colMap:Object.assign({},st.colMap),includeBreaks:st.includeBreaks,label:st.label}));
-  });
+  },beforeState?{beforeState}:undefined);
   _staged=null;_renderStageOverlay(false);
   _rerenderAll();
   const np=Object.keys(pend).length;
@@ -2956,6 +3159,8 @@ function _stageHtml(){
     pv.changes.forEach(c=>c.diffs.forEach((d,j)=>{inner+=`<tr><td>${j?'':escHtml(c.entity)}</td><td>${j?'':escHtml(c.name)}</td><td>${escHtml(d.label)}</td><td class="chg">${escHtml(d.from)} → <b>${escHtml(d.to)}</b></td><td>${d.yourEdit?'<span class="stage-your-edit" title="You changed this by hand in this session; Apply overwrites it">your edit</span>':''}</td></tr>`;}));
     h+=sec('Changes','stage-changes',inner+'</tbody></table>',pv.changes.reduce((s,c)=>s+c.diffs.length,0));
   }
+  if((pv.archivedWorked||[]).length)h+=sec('Archived in the file but worked this week (kept active and paid)','stage-block','<table class="history-table"><tbody>'+pv.archivedWorked.map(x=>`<tr><td>${escHtml(x.entity)}</td><td>${escHtml(x.name)}</td><td class="mono">${escHtml(x.id)}</td><td>${x.hours.toFixed(2)} h this week</td></tr>`).join('')+'</tbody></table>',pv.archivedWorked.length);
+  if((pv.conflicts||[]).length)h+=sec('Not matched: more than one person here matches one file person','stage-block','<table class="history-table"><tbody>'+pv.conflicts.map(x=>`<tr><td>${escHtml(x.entity)}</td><td>${escHtml(x.separate.join(', '))}</td><td>${x.matched?`also match ${escHtml(x.file)} (${escHtml(x.id)}), which was matched to ${escHtml(x.matched)} — kept separate; merge by hand if they are one person`:`all match ${escHtml(x.file)} (${escHtml(x.id)}) — kept separate; merge them by hand if they are one person`}</td></tr>`).join('')+'</tbody></table>',pv.conflicts.length);
   if(pv.identity.length)h+=sec('Identity changes','stage-identity','<table class="history-table"><tbody>'+pv.identity.map(x=>`<tr><td>${escHtml(x.entity)}</td><td>${escHtml(x.name)}</td><td>${escHtml(x.text)}</td></tr>`).join('')+'</tbody></table>',pv.identity.length);
   if(pv.added.length)h+=sec('New','stage-new','<table class="history-table"><tbody>'+pv.added.map(a=>`<tr><td>${escHtml(a.entity)}</td><td>${escHtml(a.name)}</td><td class="mono">${escHtml(a.id)}</td><td>${escHtml(_fmtStageVal('rate',a.fields.rate))} · ${escHtml(_fmtStageVal('method',a.fields.method))}${a.fields.active?'':' · inactive'}</td></tr>`).join('')+'</tbody></table>',pv.added.length);
   if(pv.notInFile.length)h+=sec('Not in file (left as they are)','stage-notin','<table class="history-table"><tbody>'+pv.notInFile.map(a=>`<tr><td>${escHtml(a.entity)}</td><td>${escHtml(a.name)}</td><td class="mono">${escHtml(a.id)}</td></tr>`).join('')+'</tbody></table>',pv.notInFile.length);
@@ -3019,6 +3224,20 @@ function downloadFileNames(key){
   });
   return out;
 }
+// FC-00048: hourly people with hours this week and no rate (they would be paid $0).
+function _rateMissingNames(){
+  const out=[];
+  entities.forEach((ent,i)=>{
+    let res;try{res=computePayrollForEntity(i);}catch(e){return;}
+    res.results.concat(res.orphanRows).forEach(r=>{
+      if(r.isFlat||!(r.actualHours>0)||r.wage>0)return;
+      const k=wKey(ent.id,r.schedName||r.name);
+      if(wageBlank[k]||!isRosterActive(ent.id,r.schedName||r.name))return;
+      out.push(r.name);
+    });
+  });
+  return out;
+}
 // ✓ or the reasons to look before sending. Never blocks a download (FC-00023).
 function downloadStatus(key){
   const reasons=[];
@@ -3030,6 +3249,7 @@ function downloadStatus(key){
     const wk=_weekExclusionSummary();if(wk.count)reasons.push(wk.count+' punch day'+(wk.count===1?'':'s')+' outside the schedule week');
     const ina=_inactiveExclusionSummary();if(ina.withPay.length)reasons.push('Active unchecked with hours: '+ina.withPay.map(x=>x.empName).join(', '));
     const nb=withData.filter(e=>!e.breakMinutesSet);if(nb.length)reasons.push('Break not confirmed: '+nb.map(e=>e.name||'Entity').join(', '));
+    const rm=_rateMissingNames();if(rm.length)reasons.push('Rate missing: '+rm.join(', ')); // FC-00048
   }else if(key==='timecards'){
     if(!entities.some(e=>e.intake&&(e.intake.reviewRows||[]).length))reasons.push('No punch rows yet');
     unapproved();
@@ -3388,7 +3608,62 @@ function onEntityNameInput(val){
 }
 function onEntityNameChange(val){entities[activeEntityIdx].name=val.trim();_syncEntityCode(entities[activeEntityIdx]);renderEntityTabBar();checkPendingSettings();}
 
+// ================================================================
+// FC-00047 — load last week's settings file first (Schedules tab)
+// ================================================================
+// The weekly settings file is the roster: loaded before schedules and timecards, every name that
+// arrives meets the people (IDs, alternate spellings, rates) it already holds. The prompt shows
+// until the owner loads a file or skips it; the Payroll tab's import stays the late path.
+let _settingsPromptSkipped=false;
+function _settingsLoadedThisSession(){return Object.keys(session._fileIdMax||{}).length>0;}
+function _settingsFirstBarHtml(){
+  const inp='<input type="file" id="settingsFirstInput" accept=".xlsx,.xls" style="display:none" onchange="if(this.files[0]){importSettingsFirstFile(this.files[0]);this.value=\'\';}">';
+  const pick="document.getElementById('settingsFirstInput').click()";
+  const box='display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-radius:6px;padding:8px 12px;margin:8px 0;font-size:13px';
+  if(_settingsLoadedThisSession()){
+    const n=Object.values(session.roster.byId).filter(r=>r&&r.fromFile).length;
+    return `<div class="settings-first-bar loaded" style="${box};background:#F0FDF4;color:#166534;border:1px solid #BBF7D0">✓ Settings file loaded · ${n} people<span style="flex:1"></span><button class="btn" style="font-size:12px;padding:4px 10px" onclick="${pick}">Load another</button>${inp}</div>`;
+  }
+  if(!_settingsPromptSkipped)return `<div class="settings-first-bar prompt" style="${box};background:#EFF6FF;color:#1E3A8A;border:1px solid #BFDBFE"><b>Load last week's settings file first?</b> Names, IDs and rates come from it.<span style="flex:1"></span><button class="btn btn-primary" style="font-size:12px;padding:4px 12px" onclick="${pick}">Load file</button><button class="btn" style="font-size:12px;padding:4px 12px" onclick="skipSettingsFirst()">Skip</button>${inp}</div>`;
+  return `<div class="settings-first-bar" style="${box};padding:4px 0"><button class="btn" style="font-size:12px;padding:4px 10px" onclick="${pick}">Load last week's settings file</button>${inp}</div>`;
+}
+function renderSettingsFirstBar(){const el=document.getElementById('settingsFirstBar');if(el)el.innerHTML=_settingsFirstBarHtml();}
+function skipSettingsFirst(){_settingsPromptSkipped=true;renderSettingsFirstBar();}
+function importSettingsFirstFile(file){importPayrollSettingsFile(file,false,{createEntities:true});}
+// Opens the file's entities that are not open yet, so its people have somewhere to go. An empty,
+// unnamed entity (the one the tool starts with) is used first. Returns what was done, so Cancel
+// can undo it: [{id, reused}].
+function _openFileEntities(rows,colMap){
+  const idx=colMap['entity'];if(idx==null)return[];
+  const names=[];
+  (rows||[]).forEach(r=>{const n=(r&&r[idx]!=null?String(r[idx]):'').trim();if(n&&!names.some(x=>x.toLowerCase()===n.toLowerCase()))names.push(n);});
+  const done=[];
+  const nextIdBefore=nextEntityId;
+  names.forEach(n=>{
+    if(_entityKnown(n))return;
+    const blank=entities.find(e=>!(e.name||'').trim()&&!(e.employees||[]).length&&!((e.intake&&e.intake.reviewRows)||[]).length&&!done.some(d=>d.id===e.id));
+    let ent=blank;
+    if(!ent){ent={id:nextEntityId++,name:'',code:'',employees:[],dateLabels:['','','','','','',''],newDateLabels:['','','','','','',''],newWeekStartVal:'',breakMinutes:0,breakMinutesSet:false,actualDays:[]};entities.push(ent);}
+    ent.name=n;_syncEntityCode(ent);
+    done.push({id:ent.id,reused:!!blank,nextIdBefore});
+  });
+  if(done.length){renderEntityTabBar();syncEntityHeader();}
+  return done;
+}
+function _closeOpenedEntities(list){
+  (list||[]).slice().reverse().forEach(d=>{
+    const i=entities.findIndex(e=>e.id===d.id);if(i<0)return;
+    const e=entities[i];
+    if((e.employees||[]).length||((e.intake&&e.intake.reviewRows)||[]).length)return;
+    if(d.reused){e.name='';e.code='';}
+    else if(entities.length>1)entities.splice(i,1);
+  });
+  if(activeEntityIdx>=entities.length)activeEntityIdx=entities.length-1;
+  renderEntityTabBar();syncEntityHeader();
+}
+
 function renderScheduleContent(){
+  renderSettingsFirstBar();
   const ent=entities[activeEntityIdx];
   const dz=document.getElementById('dropZone');
   if(ent.employees.length===0){
@@ -3687,7 +3962,7 @@ function renderTable(idx){
   for(let d=0;d<7;d++)html+=`<th class="date-row">${nl[d]||''}</th>`;
   html+='</tr></thead><tbody>';
   ent.employees.forEach((emp,ei)=>{
-    const empId=emp.name?_employeeIdFor(ent.id,emp.name):'';
+    const empId=emp.name?_empIdText(ent.id,emp.name):'';
     html+=`<tr data-emp-idx="${ei}"><td class="name-cell"><input class="name-input" value="${escHtml(emp.name)}" onchange="onTableChange()" style="border:none;background:transparent;font-weight:600;font-size:13px;text-align:center;width:calc(100% - 20px);font-family:Outfit,sans-serif"><button class="del-btn" onclick="deleteEmployee(${ei})" title="Remove">×</button>${_dupFlagHtml(ent.id,emp.name)}</td>`;
     html+=`<td class="name-cell emp-id-cell" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);text-align:center">${empId}</td>`;
     for(let d=0;d<7;d++){
@@ -5013,7 +5288,7 @@ function renderPayrollGrid(rows,ent,hasActuals,noSchedule){
   html+='<th class="date-row" style="background:#DAD8D2"></th></tr></thead><tbody>';
   rows.forEach(r=>{
     const keyName=r.schedName||r.name;
-    const empId=keyName?_employeeIdFor(ent.id,keyName):'';
+    const empId=keyName?_empIdText(ent.id,keyName):'';
     const rowCls=r.isOrphan?(noSchedule?' class="orphan-row-quiet"':' class="orphan-row"'):'';
     html+=`<tr${rowCls}><td class="name-cell">${inlineEditableNameHtml(ent.id,keyName,'payroll',()=>renderPayroll())}${_dupFlagHtml(ent.id,keyName)}</td>`;
     html+=`<td class="name-cell emp-id-cell" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3)">${empId}</td>`;
@@ -5067,7 +5342,7 @@ function renderTimeCardData(rows,hasActuals,ent,noSchedule){
       else{diffStr=`${abs.toFixed(2)}h Less`;diffCls='diff-neg';}
     }
     const keyName=r.schedName||r.name;
-    const empId=keyName?_employeeIdFor(ent.id,keyName):'';
+    const empId=keyName?_empIdText(ent.id,keyName):'';
     const rowCls=r.isOrphan?(noSchedule?' class="orphan-row-quiet"':' class="orphan-row"'):'';
     html+=`<tr${rowCls}><td class="name-cell" style="padding:8px 6px">${inlineEditableNameHtml(ent.id,keyName,'payroll',()=>renderPayroll())}${_dupFlagHtml(ent.id,keyName)}</td>`;
     html+=`<td class="name-cell emp-id-cell" style="padding:8px 6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3)">${empId}</td>`;
@@ -5127,7 +5402,7 @@ function renderPayrollCalc(rows,hasActuals,ent,noSchedule){
       totDeposit+=breakdown.deposit;totCash+=breakdown.cash;totActual+=breakdown.actualFinal;totFinal+=breakdown.roundedFinal;
     }
 
-    const empId=keyName?_employeeIdFor(ent.id,keyName):'';
+    const empId=keyName?_empIdText(ent.id,keyName):'';
     // FC-00007: the payroll-calc table doubles as the Roster panel — name is click-to-edit
     // inline, and a dedicated "Rename" button gives the same flow via an explicit action.
     // FC-00017: when there's no schedule at all, use the quiet row style (no red ⚠) and
@@ -5155,7 +5430,9 @@ function renderPayrollCalc(rows,hasActuals,ent,noSchedule){
       html+=`<td style="padding:6px;text-align:center">${typeToggleHtml}</td>`;
     }else{
       const wageVal=wageBlankFlag?'':r.wage.toFixed(2);
-      html+=`<td style="padding:6px;text-align:center"><input type="number" class="wage-input" value="${wageVal}" step="0.01" min="0" placeholder="(blank)" onchange="setWage(${i},this.value)"></td>`;
+      // FC-00048: an hourly person with hours and no rate is red until the rate is entered.
+      const rateMissing=!r.isFlat&&!(r.wage>0)&&r.actualHours>0;
+      html+=`<td style="padding:6px;text-align:center"><input type="number" class="wage-input${rateMissing?' rate-missing':''}" value="${rateMissing?'':wageVal}" step="0.01" min="0" placeholder="${rateMissing?'rate missing':'(blank)'}"${rateMissing?' style="border:2px solid var(--red);background:#FEF2F2" title="Rate missing — enter it before exporting"':''} onchange="setWage(${i},this.value)"></td>`;
       html+=`<td style="padding:6px;text-align:center">${typeToggleHtml}</td>`;
     }
 
@@ -6782,7 +7059,10 @@ function matchEmployeeName(name,ent){
   const schedSame=schedNames.find(s=>_aliasNorm(s)===nn);
   if(schedSame)return{exact:schedSame};
   const fileRec=_recordForKey(ent.id,n);
-  if(fileRec&&fileRec.fromFile&&fileRec.canonical_name)return{exact:fileRec.canonical_name};
+  if(fileRec&&(fileRec.fromFile||fileRec.addedNew)&&fileRec.canonical_name&&rosterActive[fileRec.id]!==false)return{exact:fileRec.canonical_name};
+  // FC-00047: a spelling that only an archived person carries is reported, never matched.
+  const arch=_archivedMatch(ent.id,n);
+  if(arch&&!schedNames.some(s=>_aliasNorm(s)===_aliasNorm(arch.canonical_name)))return{archived:arch.canonical_name};
   // First name match: schedule name is a single word, OCR name contains it
   for(const s of schedNames){
     const sLow=s.toLowerCase();
@@ -6857,13 +7137,77 @@ function reviewBucketKey(row,ent){
   const schedNames=ent.employees.map(e=>e.name).filter(Boolean);
   const exact=schedNames.find(s=>s.toLowerCase()===row.empName.toLowerCase());
   if(exact)return exact;
-  if(row._suggestedName)return row._suggestedName;
+  // FC-00046: same person through an alternate spelling or former name, then the suggestion
+  // followed to its person (a suggestion left on an old spelling must not open a stray tab).
+  const person=_schedNameForPerson(ent,row.empName);
+  if(person)return person;
+  // FC-00048: a confirmed person who is not on the schedule gets their own tab.
+  const reg=_registeredOffSchedule(ent,row.empName);
+  if(reg)return reg;
+  if(row._suggestedName)return schedNames.find(s=>s.toLowerCase()===row._suggestedName.toLowerCase())||_schedNameForPerson(ent,row._suggestedName)||row._suggestedName;
   const m=matchEmployeeName(row.empName,ent);
   if(m.exact)return m.exact;
   if(m.suggestion)return m.suggestion;
   return '__unrecognized__';
 }
 
+function _unrecognizedGroups(ent,rows){
+  const g=new Map();
+  (rows||[]).forEach(r=>{const n=_aliasNorm(r.empName);if(!n)return;if(!g.has(n))g.set(n,{name:(r.empName||'').trim(),rows:[]});g.get(n).rows.push(r);});
+  return[...g.values()].map(x=>{const m=matchEmployeeName(x.name,ent);return Object.assign(x,{archived:m.archived||''});});
+}
+function _unrecognizedGroupsHtml(ent,idx,rows){
+  const groups=_unrecognizedGroups(ent,rows);
+  if(!groups.length)return'';
+  let h='<div class="unrec-groups" style="margin-top:8px;padding:8px 10px;border:1px dashed var(--border,#ccc);border-radius:6px;font-size:12px"><div style="color:var(--text2);margin-bottom:6px">Names on these cards match nobody on the schedule or in the settings file:</div>';
+  groups.forEach(gr=>{
+    h+=`<div style="display:flex;align-items:center;gap:8px;margin:3px 0"><b>${escHtml(gr.name)}</b><span style="color:var(--text3)">${gr.rows.length} row${gr.rows.length===1?'':'s'}</span>`;
+    if(gr.archived)h+=`<span style="color:var(--red)">Matches archived: ${escHtml(gr.archived)}</span><button class="mini-btn" style="font-size:11px;padding:2px 8px" onclick="reactivateFromReview(${idx},'${escHtml(escJs(gr.name))}')" title="Make ${escHtml(gr.archived)} active again and put these rows on them">Reactivate</button>`;
+    else h+=`<button class="mini-btn approve" style="font-size:11px;padding:2px 8px" onclick="addNewEmployee(${idx},'${escHtml(escJs(gr.name))}','${escHtml(escJs(gr.name))}')" title="Create ${escHtml(gr.name)} as a new employee with a permanent ID; the name can be edited on their tab">Add as new employee</button>`;
+    h+='</div>';
+  });
+  return h+'</div>';
+}
+// FC-00048: creates a person (or reuses the one already holding that name) and moves the
+// Unrecognized rows read as `fromSpelling` onto them. One undo step. Returns the record.
+function addNewEmployee(entIdx,name,fromSpelling){
+  const ent=entities[entIdx];const nm=(name||'').toString().trim();
+  if(!ent||!nm)return null;
+  ensureIntakeState(ent);
+  const arch=_archivedMatch(ent.id,nm);
+  if(arch){alert(arch.canonical_name+' is archived. Use Reactivate to bring them back instead of adding a new employee.');return null;}
+  let rec=null;
+  _withCheckpoint('Add employee · '+nm,()=>{
+    const existing=_resolveRecordNoMint(ent.id,nm);
+    rec=existing||ensureRosterRecord(ent.id,nm);
+    const onSched=(ent.employees||[]).some(e=>e&&_resolveRecordNoMint(ent.id,e.name)===rec);
+    if(!existing||!(rec.fromFile||rec.addedNew||onSched))rec.addedNew=true;
+    const n=_aliasNorm(fromSpelling||nm);
+    ent.intake.reviewRows.forEach(r=>{if(r&&_aliasNorm(r.empName)===n&&reviewBucketKey(r,ent)==='__unrecognized__'){r.empName=rec.canonical_name;recomputeRowFlags(r,ent);}});
+    if(fromSpelling)_learnSpelling(ent,rec.canonical_name,fromSpelling);
+    ent.intake.activeEmpTab=rec.canonical_name;
+  });
+  if(currentTab==='intake'){refreshReviewTable(entIdx);}
+  scheduleDynamicRecompute();
+  return rec;
+}
+// FC-00047: an archived person found on a card is made active again by the owner's click, and the
+// rows read as `spelling` move onto them.
+function reactivateFromReview(entIdx,spelling){
+  const ent=entities[entIdx];if(!ent)return null;
+  const rec=_archivedMatch(ent.id,spelling);if(!rec)return null;
+  ensureIntakeState(ent);
+  _withCheckpoint('Reactivate · '+rec.canonical_name,()=>{
+    dispatch({type:'rosterActiveSet',screen:'intake',target:{kind:'employee',entity:ent.id,id:rec.id,field:'active'},from:false,to:true,meta:{empName:rec.canonical_name}});
+    const n=_aliasNorm(spelling);
+    ent.intake.reviewRows.forEach(r=>{if(r&&_aliasNorm(r.empName)===n){r.empName=rec.canonical_name;recomputeRowFlags(r,ent);}});
+    _learnSpelling(ent,rec.canonical_name,spelling);
+    ent.intake.activeEmpTab=rec.canonical_name;
+  });
+  if(currentTab==='intake')refreshReviewTable(entIdx);
+  scheduleDynamicRecompute();
+  return rec;
+}
 function renderReviewTableHtml(ent,idx){
   const rows=ent.intake.reviewRows;
   if(rows.length===0)return '<div class="review-empty-msg">No OCR results yet. Upload timecard images above and click Run OCR.</div>';
@@ -6892,6 +7236,14 @@ function renderReviewTableHtml(ent,idx){
     const needs=b.filter(r=>r.needsReview&&!r.approved).length;
     const active=n===activeKey?' active':'';
     html+=`<button class="emp-subtab${active}" onclick="setEmpSubtab(${idx},'${escJs(n)}')" title="${escHtml(n)} — ${b.length} row${b.length===1?'':'s'}">${escHtml(n)}<span class="cnt">${b.length}</span>${needs>0?'<span class="warn-dot" title="'+needs+' need review"></span>':''}${_dupFlagHtml(ent.id,n)}</button>`;
+  });
+  // FC-00048: confirmed people who are not on the schedule (added this week, or in the settings
+  // file) get their own tab after the scheduled ones.
+  [...buckets.keys()].filter(k=>k!=='__unrecognized__'&&!schedNames.includes(k)).forEach(n=>{
+    const b=buckets.get(n)||[];
+    const needs=b.filter(r=>r.needsReview&&!r.approved).length;
+    const active=n===activeKey?' active':'';
+    html+=`<button class="emp-subtab off-sched${active}" onclick="setEmpSubtab(${idx},'${escHtml(escJs(n))}')" title="${escHtml(n)} — not on this week's schedule · ${b.length} row${b.length===1?'':'s'}">${escHtml(n)} <span style="font-size:10px;color:var(--text3)">(not on schedule)</span><span class="cnt">${b.length}</span>${needs>0?'<span class="warn-dot" title="'+needs+' need review"></span>':''}</button>`;
   });
   const unrec=buckets.get('__unrecognized__')||[];
   const unrecActive=activeKey==='__unrecognized__'?' active':'';
@@ -6931,6 +7283,9 @@ function renderReviewTableHtml(ent,idx){
   }
   html+='</span></div>';
 
+  // FC-00048: Unrecognized rows grouped by the name OCR read — one button per group, so two new
+  // people this week show as two groups, and nobody is created until a button is clicked.
+  if(activeKey==='__unrecognized__')html+=_unrecognizedGroupsHtml(ent,idx,activeRows);
   // Employee-level manual row button
   html+=`<div style="margin-top:6px;margin-bottom:4px"><button class="btn" onclick="addManualRow(${idx})" style="font-size:11px;padding:4px 10px">+ Add manual row for ${empLabel}</button></div>`;
 
@@ -6980,19 +7335,28 @@ function renderReviewTableHtml(ent,idx){
     html+=`<td><select class="name-field" onchange="updateReviewField('${r.id}','empName',this.value)" style="min-width:120px">`;
     const cur=r.empName||'';
     const exactSched=schedNames.find(s=>s.toLowerCase()===cur.toLowerCase());
-    const suggSched=(!exactSched&&r._suggestedName&&schedNames.some(s=>s.toLowerCase()===r._suggestedName.toLowerCase()))?schedNames.find(s=>s.toLowerCase()===r._suggestedName.toLowerCase()):'';
-    const effective=exactSched||suggSched||cur;
-    const effectiveMatchesSched=!!exactSched||!!suggSched;
+    // FC-00046: same person through an alternate spelling / former name first, then the
+    // suggestion followed to its person — the same order the review tabs and payroll use.
+    const personSched=exactSched?'':_schedNameForPerson(ent,cur);
+    const suggSched=(!exactSched&&!personSched&&r._suggestedName)?(schedNames.find(s=>s.toLowerCase()===r._suggestedName.toLowerCase())||_schedNameForPerson(ent,r._suggestedName)||''):'';
+    const viaSched=personSched||suggSched;
+    const regOff=(!exactSched&&!viaSched)?_registeredOffSchedule(ent,cur):'';
+    const effective=exactSched||viaSched||regOff||cur;
+    const effectiveMatchesSched=!!exactSched||!!viaSched;
     html+=`<option value=""${cur===''?' selected':''}>— select employee —</option>`;
     schedNames.forEach(n=>{
       const sel=effectiveMatchesSched&&n.toLowerCase()===effective.toLowerCase()?' selected':'';
-      const lbl=(suggSched&&n.toLowerCase()===suggSched.toLowerCase())?`${n} (${r.rawOcrName||cur})`:n;
+      const lbl=(viaSched&&n.toLowerCase()===viaSched.toLowerCase())?`${n} (${r.rawOcrName||cur})`:n;
       html+=`<option value="${escHtml(n)}"${sel}>${escHtml(lbl)}</option>`;
     });
+    // FC-00048: confirmed people not on this week's schedule, then a way to add a new one.
+    const offList=_registeredOffScheduleList(ent);
+    offList.forEach(n=>{html+=`<option value="${escHtml(n)}"${regOff&&n===regOff?' selected':''}>${escHtml(n)} (not on schedule)</option>`;});
     // Preserve the raw OCR name if it doesn't match any schedule name (no fuzzy match either)
-    if(cur&&!effectiveMatchesSched){
+    if(cur&&!effectiveMatchesSched&&!regOff){
       html+=`<option value="${escHtml(cur)}" selected>${escHtml(cur)} (not on schedule)</option>`;
     }
+    html+='<option value="__new__">+ New employee\u2026</option>';
     html+='</select>';
     // FC-00017: with zero scheduled employees there's nothing meaningful to pick from —
     // add a small gray italic hint so it's clear the typed/OCR'd name will become the
@@ -7004,8 +7368,8 @@ function renderReviewTableHtml(ent,idx){
     // 3b. Employee ID + duplicate-name flag (only meaningful once the row is matched to a
     // scheduled roster name; unmatched/OCR-only rows show a blank ID since they aren't a
     // roster record yet).
-    if(effectiveMatchesSched){
-      const empId=_employeeIdFor(ent.id,effective);
+    if(effectiveMatchesSched||regOff){
+      const empId=_empIdText(ent.id,effective);
       html+=`<td class="emp-id-cell" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text3)">${empId}${_dupFlagHtml(ent.id,effective)}</td>`;
     }else{
       html+='<td class="emp-id-cell" style="font-size:10px;color:var(--text3)">\u2014</td>';
@@ -7178,8 +7542,28 @@ function scheduleDynamicRecompute(){
 
 function updateReviewField(id,field,val){
   const h=findReviewRow(id);if(!h)return;
+  // FC-00048: "+ New employee…" in the name dropdown asks for the name, creates the person and
+  // puts this row on them.
+  if(field==='empName'&&val==='__new__'){
+    const nm=prompt('New employee name:',(h.row.rawOcrName||h.row.empName||'').trim());
+    if(!nm||!nm.trim()){refreshReviewTable(entities.indexOf(h.ent));return;}
+    const rec=addNewEmployee(entities.indexOf(h.ent),nm.trim(),null);
+    if(!rec)return;
+    val=rec.canonical_name;
+  }
   const from=_takeEditStart(h.row,field);
   h.row[field]=val;
+  // FC-00047: picking a person for a row teaches the tool the card's spelling for them; moving the
+  // row to someone else takes back a spelling this row taught.
+  if(field==='empName'&&String(from==null?'':from)!==String(val==null?'':val)){
+    const lr=h.row._learned;
+    if(lr&&_resolveRecordNoMint(h.ent.id,val||'')!==session.roster.byId[lr.id]){_unlearnSpelling(h.ent,lr.id,lr.spelling,h.row);delete h.row._learned;}
+    const sp=(h.row.rawOcrName||from||'').toString().trim();
+    if(val&&sp&&_spellingSafeToLearn(h.ent,val,sp,h.row)&&_learnSpelling(h.ent,val,sp)){
+      const rec=_resolveRecordNoMint(h.ent.id,val);
+      if(rec)h.row._learned={id:rec.id,spelling:sp};
+    }
+  }
   if(REVIEWER_EDIT_FIELDS.includes(field))_applyReviewerEditState(h.row);
   recomputeRowFlags(h.row,h.ent);
   // If the row was previously approved and edits invalidate it, un-approve
@@ -7202,8 +7586,9 @@ function recomputeRowFlags(row,ent){
     if(!exact){
       // Try fuzzy match
       const m=matchEmployeeName(row.empName,ent);
-      if(m.suggestion&&m.suggestion.toLowerCase()!==row.empName.toLowerCase())row.flags.push('Name unsure');
-      else if(!m.suggestion)row.flags.push('Not on schedule');
+      if(m.archived)row.flags.push('Matches archived: '+m.archived);
+      else if(m.suggestion&&m.suggestion.toLowerCase()!==row.empName.toLowerCase())row.flags.push('Name unsure');
+      else if(!m.suggestion&&!(m.exact&&schedNames.includes(m.exact)))row.flags.push('Not on schedule');
     }
   }
   if(!row.date)row.flags.push('Date missing');
@@ -7432,8 +7817,11 @@ function syncActualsFromReview(){
       // Resolve effective empName: if OCR/review row fuzzy-matched a schedule name
       // via _suggestedName, route punches to that schedule name instead of the raw OCR string.
       const exactSched=schedNames.find(s=>s.toLowerCase()===r.empName.toLowerCase());
-      const suggSched=(!exactSched&&r._suggestedName&&schedNames.some(s=>s.toLowerCase()===r._suggestedName.toLowerCase()))?schedNames.find(s=>s.toLowerCase()===r._suggestedName.toLowerCase()):'';
-      const effectiveName=exactSched||suggSched||r.empName;
+      // FC-00046: a spelling that is a scheduled person (alternate spelling, former name) goes to
+      // that person before any fuzzy suggestion, and a suggestion is followed to its person too.
+      const personSched=exactSched?'':_schedNameForPerson(ent,r.empName);
+      const suggSched=(!exactSched&&!personSched&&r._suggestedName)?(schedNames.find(s=>s.toLowerCase()===r._suggestedName.toLowerCase())||_schedNameForPerson(ent,r._suggestedName)):'';
+      const effectiveName=exactSched||personSched||suggSched||_personNameOnEntity(ent,r.empName)||r.empName;
       const pairs=[];
       const mkPair=(inStr,outStr)=>{
         const inH=parseClockTime(inStr),outH=parseClockTime(outStr);
@@ -7695,7 +8083,7 @@ function _columnsFor(kind,nameKey){
       rowFn:(r)=>{
         const hrs=r.isFlat?'':xlHours(hasActuals?(r.actualHours||0):(r.expectedH||0));
         const rate=r._wageBlank?'':(r.isFlat?'flat':(r.wage>0?xlMoney(r.wage):'—'));
-        return [r._entityName,_nm(r)+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':'Cash',hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.cash)];
+        return [r._entityName,_nm(r)+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':'Cash',hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.cash)];
       },
       fx:(r,n)=>_fxPayBlock(r,n,{hours:3,rate:4,total:5,cash:6},{hoursDrivePay:hasActuals}),
       totals:[{col:6,val:r=>r._breakdown.cash}],
@@ -7710,7 +8098,7 @@ function _columnsFor(kind,nameKey){
       rowFn:(r)=>{
         const hrs=r.isFlat?'':xlHours(hasActuals?(r.actualHours||0):(r.expectedH||0));
         const rate=r._wageBlank?'':(r.isFlat?'flat':(r.wage>0?xlMoney(r.wage):'—'));
-        return [r._entityName,_nm(r)+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':methodLabel(r._breakdown.method),hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.deposit)];
+        return [r._entityName,_nm(r)+(r.isFlat?' (flat)':''),r._breakdown.method==='both'?'Deposit + Cash':methodLabel(r._breakdown.method),hrs,rate,r._wageBlank?'':xlMoney(r._totalPay),r._wageBlank?'':xlMoney(r._breakdown.deposit)];
       },
       fx:(r,n)=>_fxPayBlock(r,n,{hours:3,rate:4,total:5,deposit:6},{hoursDrivePay:hasActuals}),
       totals:[{col:6,val:r=>r._breakdown.deposit}],
@@ -7730,7 +8118,7 @@ function _columnsFor(kind,nameKey){
         const diffCell=Math.abs(diff)>=0.005?xlMoneySigned(diff):'';
         return [
           r._entityName,
-          _nm(r)+(r.isOrphan?' (orphan)':'')+(r.isFlat?' (flat)':''),
+          _nm(r)+(r.isFlat?' (flat)':''),
           methodLbl,
           hrs,
           rate,
@@ -7768,7 +8156,7 @@ function _columnsFor(kind,nameKey){
         const avgIn=r.avgInDiff!=null?(r.avgInDiff>0?'+':'')+r.avgInDiff.toFixed(0)+'m':'';
         const avgOut=r.avgOutDiff!=null?(r.avgOutDiff>0?'+':'')+r.avgOutDiff.toFixed(0)+'m':'';
         const ot=(r.actualHours||0)>40?'⚠ '+((r.actualHours-40).toFixed(2))+'h over':'';
-        return [r._entityName,_nm(r)+(r.isOrphan?' (orphan)':''),expBreak,expH,actBreak,actH,diff,avgIn,avgOut,ot];
+        return [r._entityName,_nm(r),expBreak,expH,actBreak,actH,diff,avgIn,avgOut,ot];
       },
       fx:(r,n)=>r.isFlat?{}:{6:{f:'ROUND(F'+n+'-D'+n+',2)',r:Math.round(((r.actualHours||0)-(r.expectedH||0))*100)/100,fmt:XL_FMT_HOURS}},
       totals:[
@@ -7793,7 +8181,7 @@ function _columnsFor(kind,nameKey){
         const diffCell=Math.abs(diff)>=0.005?xlMoneySigned(diff):'';
         return [
           r._entityName,
-          _nm(r)+(r.isOrphan?' (orphan)':''),
+          _nm(r),
           actBreak,
           actH,
           wageOrFlat,
@@ -8700,6 +9088,7 @@ function _gatherPayrollSettingsRows(includeBreaks){
     const seen=new Set();
     const entStart=out.length;
     const pushRow=(empName,displayName)=>{
+      if(!(empName||'').toString().trim())return; // FC-00046: a blank name is nobody
       const rec0=ensureRosterRecord(ent.id,empName);
       const lkLow=rec0.id;
       if(seen.has(lkLow))return;seen.add(lkLow);
@@ -8826,7 +9215,7 @@ function _normalizePayMethod(s){
   return null;
 }
 
-function importPayrollSettingsFile(file,includeBreaks){
+function importPayrollSettingsFile(file,includeBreaks,opts){
   if(!file)return;
   const reader=new FileReader();
   reader.onload=function(e){
@@ -8849,7 +9238,9 @@ function importPayrollSettingsFile(file,includeBreaks){
       const tsName=wb.SheetNames.find(n=>/tool\s*settings/i.test(n));
       const tsRows=tsName?XLSX.utils.sheet_to_json(wb.Sheets[tsName],{header:1,defval:'',raw:false}).slice(1):[];
       // FC-00038: show what the file would change; nothing is applied until Apply.
-      stageSettingsData(data.slice(headerRow+1),colMap,!!includeBreaks,tsRows,file.name||'settings file');
+      // FC-00047: loaded first (Schedules tab), the file opens its own entities.
+      const opened=opts&&opts.createEntities?_openFileEntities(data.slice(headerRow+1),colMap):[];
+      stageSettingsData(data.slice(headerRow+1),colMap,!!includeBreaks,tsRows,file.name||'settings file',{openedEntities:opened});
     }catch(err){alert('Error reading file: '+err.message);}
   };
   reader.readAsArrayBuffer(file);
@@ -9030,7 +9421,27 @@ function _ingestPayrollSettings(rows,colMap,includeBreaks){
   // FC-00036: anyone loaded before this file under a spelling the file knows (same name in
   // another case, an alias) becomes that file person — one ID, one canonical name.
   let mergedCount=0;
-  touchedEntities.forEach(entId=>{mergedCount+=_mergeProvisionalRecords(entId);_renumberProvisionalIds(entId);});
+  // FC-00046: nameless records left by older sessions (an empty lookup used to create one per
+  // entity) are dropped before renumbering, so they never hold an ID in front of a real person.
+  touchedEntities.forEach(entId=>_dropBlankRecords(entId));
+  const report={conflicts:[],archivedWorked:[]};
+  touchedEntities.forEach(entId=>{mergedCount+=_mergeProvisionalRecords(entId,report);_renumberProvisionalIds(entId);});
+  // FC-00046: a person the file marks archived who has punches this week is kept active and
+  // paid — the import never drops hours silently. The preview lists them in red.
+  touchedEntities.forEach(entId=>{
+    const ent=entities.find(e=>e.id===entId);if(!ent)return;
+    Object.keys(session.roster.byId).forEach(id=>{
+      const r=session.roster.byId[id];
+      if(!r||r.entity!==entId||!r.fromFile||rosterActive[id]!==false)return;
+      // Only punches that are paid: inside the schedule week, not on an ignored employee.
+      const weekIsos=new Set((ent.dateLabels||[]).map(schedLabelToIso).filter(Boolean));
+      const ign=new Set(Object.keys((ent.intake&&ent.intake.ignoredEmployees)||{}).filter(k=>ent.intake.ignoredEmployees[k]).map(k=>k.toLowerCase().trim()));
+      const mins=(ent.actualDays||[]).filter(d=>d&&(!weekIsos.size||weekIsos.has(d.date))&&!ign.has((d.empName||'').toLowerCase().trim())&&_resolveRecordNoMint(entId,d.empName)===r).reduce((a,d)=>a+(d.pairs||[]).reduce((x,pp)=>x+(pp.minutes||0),0),0);
+      if(mins<=0)return;
+      dispatch({type:'rosterActiveSet',screen:'settings-import',target:{kind:'employee',entity:entId,id,field:'active'},from:false,to:true,meta:{empName:r.canonical_name,reason:'archivedWorked'}});
+      report.archivedWorked.push({entity:ent.name||'',name:r.canonical_name,id,hours:Math.round(mins/60*100)/100});
+    });
+  });
   if(currentTab==='payroll'&&!_simulating)renderPayroll();
   let msg=`Imported settings for ${updated} employee${updated===1?'':'s'}`;
   if(mergedCount>0)msg+=` · ${mergedCount} name${mergedCount===1?'':'s'} matched to existing employees`;
@@ -9039,7 +9450,7 @@ function _ingestPayrollSettings(rows,colMap,includeBreaks){
   if(aliasRejects.length>0)msg+=` · ${aliasRejects.length} alias${aliasRejects.length===1?'':'es'} refused`;
   showToast(msg,(unmatchedEntities.size>0||aliasRejects.length>0)?'err':'ok');
   if(aliasRejects.length>0&&!_simulating)alert('These aliases were not imported because they are ambiguous:\n\n'+aliasRejects.join('\n'));
-  return{updated,skipped,mergedCount,unmatchedEntities:[...unmatchedEntities],aliasRejectRows};
+  return{updated,skipped,mergedCount,unmatchedEntities:[...unmatchedEntities],aliasRejectRows,conflicts:report.conflicts,archivedWorked:report.archivedWorked};
 }
 
 
@@ -9091,6 +9502,7 @@ function collectAllFlags(allEntityResults){
 updateOcrStatus();
 renderEntityTabBar();
 syncEntityHeader();
+renderSettingsFirstBar(); // FC-00047: the prompt is there from the start
 // FC-00037: closing or refreshing with changes since the last snapshot asks first.
 window.addEventListener('beforeunload',_onBeforeUnload);
 </script>

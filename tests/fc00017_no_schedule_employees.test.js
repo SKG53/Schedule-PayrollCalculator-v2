@@ -101,25 +101,23 @@ test('test_orphan_employee_gets_stable_roster_id_across_rerenders', () => {
   api.setTestMode(true);
   withActualsOnly(api);
 
+  // FC-00046: with no settings file loaded the ID is a placeholder, shown as "ID pending";
+  // the roster still holds one stable ID for the person across re-renders.
   api.renderPayroll();
   const calcFirst = api.__sandbox.document.getElementById('payrollCalcTable').innerHTML;
-  const idMatch = calcFirst.match(/EMP_[A-Z0-9]{3}_\d{5}/);
-  assert.ok(idMatch, 'orphan employee row should render a proper EMP_XXX_NNNNN id, same as schedule-sourced employees');
-  const firstId = idMatch[0];
+  assert.ok(calcFirst.includes('ID pending'), 'orphan employee row shows "ID pending" before any settings file');
+  assert.ok(!/EMP_[A-Z0-9]{3}_\d{5}/.test(calcFirst), 'no placeholder number is shown as if permanent');
+  const firstId = api._employeeIdFor(0, 'Jane Domino');
+  assert.match(firstId, /^EMP_[A-Z0-9]{3}_\d{5}$/, 'the roster still holds a proper EMP_XXX_NNNNN id');
 
-  // Re-render (e.g. after switching tabs/re-rendering payroll) must produce the exact same id.
+  // Re-render (e.g. after switching tabs/re-rendering payroll) must keep the exact same id.
   api.renderPayroll();
-  const calcSecond = api.__sandbox.document.getElementById('payrollCalcTable').innerHTML;
-  assert.ok(calcSecond.includes(firstId), 'orphan employee id must be stable across re-renders');
-
-  // Also verify directly via the roster API and cross-check the grid + timecard tables.
-  const idViaApi = api._employeeIdFor(0, 'Jane Domino');
-  assert.equal(idViaApi, firstId, '_employeeIdFor should mint/reuse the exact same id shown in the rendered table');
+  assert.equal(api._employeeIdFor(0, 'Jane Domino'), firstId, 'orphan employee id must be stable across re-renders');
 
   const grid = api.__sandbox.document.getElementById('payrollGrid').innerHTML;
   const timecard = api.__sandbox.document.getElementById('timecardDataTable').innerHTML;
-  assert.ok(grid.includes(firstId), 'weekly grid should show the same stable id for the orphan employee');
-  assert.ok(timecard.includes(firstId), 'time card data table should show the same stable id for the orphan employee');
+  assert.ok(grid.includes('ID pending'), 'weekly grid shows the same pending state');
+  assert.ok(timecard.includes('ID pending'), 'time card data table shows the same pending state');
 });
 
 test('test_review_dropdown_hint_shown_when_no_schedule', () => {

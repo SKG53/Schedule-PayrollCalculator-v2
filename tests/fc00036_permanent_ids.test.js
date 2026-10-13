@@ -98,5 +98,8 @@ test('test_ocr_alias_matches_even_when_not_on_schedule', () => {
   const { api } = load(['settings']);
   const m = api.matchEmployeeName('Beacon M', api.entities[0]);
   assert.equal(m.exact, 'Beacon Mortar');
-  assert.equal(api.matchEmployeeName('CASEY PARCEL', api.entities[0]).exact, 'Casey Parcel');
+  // FC-00047: Casey Parcel is archived (Active = No): reported, never matched automatically.
+  const c = api.matchEmployeeName('CASEY PARCEL', api.entities[0]);
+  assert.equal(c.exact, undefined);
+  assert.equal(c.archived, 'Casey Parcel');
 });
